@@ -1,0 +1,192 @@
+---
+title: "code_almont_streamflow_gap_fill"
+output: html_notebook
+---
+
+```{r}
+#Create gap-filled streamflow at Almont gauge based on Taylor flows
+#From M. Newcomer
+
+library("MASS")
+library("RColorBrewer")
+library("dataRetrieval")
+library("tidyr")
+library("plyr")
+library("randomForest")
+library("zoo")
+
+wtr_yr <- function(dates, start_month) {
+  # Convert dates into POSIXlt
+  dates.posix = as.POSIXlt(dates)
+  # Year offset
+  offset = ifelse(dates.posix$mon >= start_month - 1, 1, 0)
+  # Water year
+  adj.year = dates.posix$year + 1900 + offset
+  # Return the water year
+  adj.year
+}
+
+mape <- function(actual,pred){
+  mape <- mean(abs((actual - pred)/actual))*100
+  return (mape)
+}
+
+ma <- function(x, n = 7) {
+  stats::filter(x, rep(1/n, n), sides = 1)
+}
+
+
+```
+
+
+```{r}
+#rm(list=ls())
+
+#https://waterdata.usgs.gov/nwis/inventory?agency_code=USGS&site_no=09112500
+#Latitude 38°39'52",   Longitude 106°50'51"   NAD27
+#Gunnison County, Colorado, Hydrologic Unit 14020001
+#Drainage area: 289 square miles
+#Contributing drainage area: 289 square miles,
+#Datum of gage: 8,006.29 feet above   NGVD29.
+
+
+# Data for the following 1 site(s) are contained in this file
+#    USGS 09112500 EAST RIVER AT ALMONT, CO
+# -----------------------------------------------------------------------------------
+#
+# Data provided for site 09112500
+#            TS   parameter     statistic     Description
+#         18852       00060     00003     Discharge, cubic feet per second (Mean)
+#
+
+
+#directory1 = "D:/LBL/SFA/Data/Erica Runoff/"
+#setwd(directory1)
+
+#Q=read.table(file="09112500.v2.nh.txt",header=FALSE,sep="\t", stringsAsFactors=FALSE)
+
+siteNumber<-"09112500" #Almont
+Q<-readNWISdv(siteNumber=siteNumber,startDate = "",endDate = "",parameterCd = "00060")
+
+Q_1<-readNWISdv(siteNumber="09112200",startDate = "",endDate = "",parameterCd = "00060") #East blw. Cement
+Q_2<-readNWISdv(siteNumber="09114500",startDate = "",endDate = "",parameterCd = "00060") #Gunnison
+Q_3<-readNWISdv(siteNumber="09149500",startDate = "",endDate = "",parameterCd = "00060") #Uncompahgre  
+Q_4<-readNWISdv(siteNumber="09110000",startDate = "",endDate = "",parameterCd = "00060") #Taylor
+
+#289 square miles = 748506564 square meters
+Area_Almont = 748506564
+
+```
+
+```{r}
+plot(Q$Date,Q[,4],log="y")
+points(Q_1$Date,Q_1[,4],col="blue")
+#points(Q_2$Date,Q_2[,4],col="orange")
+#points(Q_3$Date,Q_3[,4],col="red")
+points(Q_4$Date,Q_4[,4],col="yellow") #Potential to use Taylor to gap-fill
+
+```
+
+
+
+
+
+
+```{r}
+
+Q$Q_m3s<-Q[,4]/(3.28084^3) #convert to m3/s
+Q$Q_m3d<-Q$Q_m3s*86400 #m3/s to m3/d
+Q$dateTime<-as.Date(as.POSIXct(Q$Date,format="%Y-%m-%d"))
+Q$waterYear<-wtr_yr(Q$Date,10)
+Q$DOY <- as.numeric(format.Date(Q$Date,format="%j"))
+
+Q_4$Q_m3s<-Q_4[,4]/(3.28084^3) #convert to m3/s
+Q_4$Q_m3d<-Q_4$Q_m3s*86400 #m3/s to m3/d
+Q_4$dateTime<-as.Date(as.POSIXct(Q_4$Date,format="%Y-%m-%d"))
+Q_4$waterYear<-wtr_yr(Q_4$Date,10)
+Q_4$DOY <- as.numeric(format.Date(Q_4$Date,format="%j"))
+
+```
+
+```{r}
+
+Q_annual<- ddply(Q, .(waterYear), summarize, n_Q=length(Q_m3d), Q_vol=sum(Q_m3d))
+Q_annual_Taylor<- ddply(Q_4, .(waterYear), summarize, n_Q_Tay=length(Q_m3d), Q_vol_Tay=sum(Q_m3d))
+
+
+Q_annual_Taylor<- Q_annual_Taylor[-1,] #remove the first year of Taylor
+
+plot(x=Q_annual[,1],y=Q_annual[,3],type="l")
+plot(x=Q_annual_Taylor[,1],y=Q_annual_Taylor[,3],type="l")
+```
+
+
+
+
+```{r}
+Area_Almont = 748506564 #289 sq miles 
+Area_Taylor = 1.233e+9 #476 sq. miles
+
+#Create RF model for east with Taylor data
+
+Q_4$Q_m3d_Tay<-Q_4$Q_m3d
+Q_All<-merge(Q[,c("Date","Q_m3d")],Q_4[,c("Date","Q_m3d_Tay","waterYear","DOY")],by="Date",all.y=TRUE)
+
+
+  ######## Model 5 random forest hourly values from pumphouse and hourly from upstream. Hysteresis present.
+  #Example random forest approach https://www.pluralsight.com/guides/machine-learning-for-time-series-data-in-r
+  Q_All$class<-"Train"
+  rindx<-round(nrow(Q_All)/5,0)
+  rseq<-seq(1:nrow(Q_All))
+  set.seed(100)
+  rindx<-sample(rseq, rindx)
+  Q_All$class[rindx]<-"Test" ##20% of the dataset where the test values are randomly selected
+  #df7$class[(nrow(df7)-round(nrow(df7)/5,0)):nrow(df7)]<-"Test" #20% of the dataset where the test values are the last 20%
+  train = Q_All[Q_All$class == 'Train',]
+  train<-train[complete.cases(train),]
+  test = Q_All[Q_All$class == 'Test',]
+  test<-test[complete.cases(test),]
+  dim(train)
+  dim(test)
+  
+  set.seed(100)
+  
+  mod5 = randomForest(Q_m3d ~ Q_m3d_Tay+DOY, data = train) #RF model takes 2 minutes..
+  
+```
+
+
+```{r}
+
+#see results
+  print(mod5)
+  predictions = predict(mod5, newdata = train)
+  mape(train$Q_m3d, predictions) #error here is small around 20%
+  
+  predictions = predict(mod5, newdata = test)
+  mape(test$Q_m3d, predictions) #error is around 14%
+  varImpPlot(mod5) #
+
+
+```
+
+```{r}
+
+#Predict from model and then gap fill
+
+  Q_Pred <- predict(mod5, newdata = Q_All)
+  Q_All$Q_Pred<-Q_Pred
+  Q_All$Q_m3d_GF<-Q_All$Q_m3d
+  indx<-which(is.na(Q_All$Q_m3d_GF))
+  Q_All$Q_m3d_GF[indx]<-Q_All$Q_Pred[indx]
+  
+  
+```
+
+```{r}
+  plot(Q_All$Date,Q_All$Q_m3d,xlab="Almont",col="black",type="l",log="y") #11466800 versus 11465750
+  lines(Q_All$Date,Q_All$Q_m3d_GF,col="blue")
+
+  
+```
+
