@@ -1,0 +1,3067 @@
+---
+title: "Siirila-Woodburn et al., Nature Geosciences - Final Figures: 8/25/25 "
+output: html_notebook
+---
+
+```{r}
+library("MASS")
+library("RColorBrewer")
+library('plot.matrix')
+
+library(prism)
+library(sf)
+#library(readr)
+library(exactextractr)
+
+library(sp)
+library(raster)
+#library(rgdal)
+
+library(parallel)
+library(tidyr)
+
+library(ggplot2)
+library(cowplot)
+
+library(Ternary)
+#directory1 = "/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results"
+directory1 = "/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results"
+setwd(directory1)
+
+```
+
+```{r}
+################################################ Fig A3 ################################################ 
+#Load this first to have subbasin information for following figures
+
+#Load subbasin mask
+subbasin=matrix(0,nrow=170,ncol=150)
+subbasin_f=matrix(0,nrow=150,ncol=170)
+subbasin_fa=matrix(0,nrow=150,ncol=170)
+subbasin=as.matrix(read.table(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/subbasin_indicator.nh.txt"))
+#image.plot(subbasin)
+
+
+count_f=170+1
+for (j in 1:170)  {	
+  count_f=count_f-1
+  for (i in 1:150)  {
+    subbasin_f[i,count_f]=subbasin[j,i]
+  }
+}
+#image.plot(elev_f)
+#image.plot(slope_f)
+#image.plot(aspect_f,zlim=c(0,360))
+
+count_fa=170+1
+for (j in 1:170)  {	
+  count_fa=count_fa-1
+  for (i in 1:150)  {
+    subbasin_fa[i,j]=subbasin_f[i,count_fa]
+  }
+}
+library(fields)
+#image.plot(subbasin_fa)
+
+#Load DEM
+source("/Users/ERWoodburn/Desktop/erica_copy/codes/PFB_Readers/PFB-ReadFcn.R")
+library(graphics)
+library('plot.matrix')
+#library(fields)
+
+fin_dem=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/ER_dem.pfb") 	
+dem=readpfb(fin_dem,F)
+
+library(colorspace)
+q5 <- sequential_hcl(10, palette = "lajolla")
+
+q_10_100 <- sequential_hcl(100, palette = "Lajolla")
+q_10 <- sequential_hcl(10, palette = "Lajolla")
+
+image.plot(dem[,,1],col=q_10_100,zlim=c(2700,4100),axes=T,frame.plot=T, xaxt='n', ann=TRUE, yaxt='n')
+
+```
+
+```{r}
+#Determine counts for elevation bins
+nbins=14 #(2700 m to 4100 m)
+count_elev_bins=matrix(0,ncol=3,nrow=nbins)
+bin_map=matrix(0,nrow=150,ncol=170)
+for (x in 1:150) {
+  for (y in 1:170) {
+    if (subbasin_fa[x,y]>=1) {
+      for (b in 1:nbins) {
+          #cat("X and Y ",x," ",y," elev is ",dem[x,y,1], "Star/End are: ",elev_s," ",elev_f, "\n")
+          elev_s=2700+(b*100)-100
+          elev_f=elev_s+100
+        if ((dem[x,y,1]>=elev_s)&&(dem[x,y,1]<=elev_f)) {
+          count_elev_bins[b,1]=elev_s
+          count_elev_bins[b,2]=elev_f
+          count_elev_bins[b,3]=count_elev_bins[b,3]+1
+          #cat("Bin number",b," elev is ",dem[x,y,1], "Star/End are: ",elev_s," ",elev_f, "\n")
+          #mark new mask
+          bin_map[x,y]=b
+          b=nbins+1
+        }
+      }
+    }#check in ER
+  }
+}
+#count_elev_bins
+#sum(count_elev_bins[1:14,3]) #8471
+image.plot(bin_map,col=q_10,zlim=c(1,14))
+#image.plot(bin_map,col=q_10,zlim=c(1,14),axes=T,frame.plot=T, xaxt='n', ann=TRUE, yaxt='n')
+```
+
+```{r}
+################################################## FIGURE A5 ##################################################################
+
+#Downloaded PRISM files for 1908-1980 data
+
+vars <- c('tmean','ppt')
+years <- 1908:1980
+
+  
+mons <- 1:12 # Desired months to get data for
+cwd <- "/Users/ERWoodburn/Desktop/erica_copy/data/cosumnes/caldor/prism_raw_monthly_1908_1980"
+
+#If needed, use this to download
+for(var in vars){
+
+  #define directory path
+  dirPath <- paste(cwd, var, sep = '/')
+
+  #download data
+  print(paste0('Downloading monthly data for ',var, ' ...'))
+  print(paste0('Years: ', years[1], '-', tail(years, n = 1)))
+  options(prism.path = dirPath) #set location for where to download data to
+  get_prism_monthlys(var, year = years, mon = mons, keepZip = FALSE)
+}
+
+```
+
+```{r}
+#Calculate for 1908-1980 data
+
+#Path to where the bil files exist:
+setwd=cwd <- "/Users/ERWoodburn/Desktop/erica_copy/data/cosumnes/caldor/prism_raw_monthly_1908_1980"
+shapefile <- 'East_above_Almont_at_USGS'
+
+
+calcByGrid <- function(var, shapefilePath, func = "mean", csvPath = getwd(), crs = 4326){
+
+  # Calculate mean or sum of input var by grid cell for input raster prism data and shapefile
+  # Assumes prism data is loaded into "prism/" + var (see download_prism_data.R)
+  #
+  # Args: 
+  #   - var (character): name of prism variable-- must have corresponding folder of data 
+  #   - shapefilePath (character): path to shapefile
+  #   - func (character, optional): function to perform on data in each grid (must be either mean or sum, default to mean)
+  #   - csvPath (character, optional): path to save output csv to (default to current working directory)
+  #
+  # Returns: 
+  # saves csv file to machine
+  begin <- Sys.time()
+  print(paste0("Extracting data for ", var, "..."))
+  
+  #get path to folders containing prism data for variable 
+  dataPath <- paste(cwd, var , sep = "/")
+
+  #check to make sure inputs are valid 
+  stopifnot((tolower(func) == "mean") | (tolower(func) == "sum"))
+  stopifnot(dir.exists(dataPath)) 
+  stopifnot(file.exists(shapefilePath))
+  
+  #column name
+  dataName <- paste(func, "of", tolower(var), sep = " ")
+  
+  #used to detect CPU cores and make cluster
+  ncores <- detectCores()
+  cl <- makeCluster(ncores)
+
+  #parallelize computer with cluster cl
+  #load desired packages into each cluster
+  clusterEvalQ(cl, {library(prism)})
+
+  # Check if data download from PRISM API worked. This has downloaded empty folders for me before. If this happens, just go to the PRISM website and download the bil folders directly, and put them in the correct location in the data folder to replace the empty folder.
+  lapply(list.files(dataPath), function(x){
+    len_dir <- length(list.files(paste(dataPath,x,sep = '/')))
+    if (grepl('provisional', x, fixed = TRUE)){
+      stop(paste0("Error: ", x , " is a folder of provisional data. In order to run this script, delete provisional prism data from the prism_raw folder."))
+    }
+    if (len_dir==0){
+      stop(paste0("Error: ", x , " is an empty folder. Download data from the prism website."))
+    }
+  })
+  
+  #apply function fun to list 
+  prism_list <- parLapply(cl = cl, X = dataPath, fun = function(path) {
+    options(prism.path = path)
+    dat <- ls_prism_data() #get list of bil datatypes
+    stacks <- prism_stack(dat[1:nrow(dat),]) #get a stack of prism files
+    return(stacks)
+  })
+  stopCluster(cl)
+  
+  #load shapefile with grids 
+  counties <- read_sf(shapefilePath)
+  counties <- st_transform(counties, crs(prism_list[[1]])@projargs)
+  ext <- raster::extent(counties)
+  
+  stack <- prism_list[[1]]
+  res_list <- list()
+
+  for(i in 1:length(stack@layers)) {
+    #crop prism data to shapefile 
+    prismData <- stack@layers[[i]]
+    crop <- raster::crop(x = prismData, y = ext) 
+    vals <- exactextractr::exact_extract(crop, counties, func)
+    vals <- as.list(vals)
+    
+    #create data frame of data
+    df <- data.frame(vals) %>% tidyr::gather(key = "date", value = "data")
+    colnames(df)[2] <- dataName
+    
+    #replace date column with columns for month and year
+    date <- names(stack[[i]])
+    date <- readr::parse_number(gsub(".*4kmM3_", "", date))
+    date <- as.Date(paste0(date, "01"), "%Y%m%d")
+    df$date <- date
+    
+    #add df to list 
+    res_list[[i]] <- df
+    gc()
+  }
+  
+  final_df <- do.call(rbind, res_list)
+  #final_df$NAME<- rep(counties$NAME, length(unique(final_df$date)))
+  #final_df$GEOID <- rep(counties$GEOID, length(unique(final_df$date)))
+  #final_df$NAMELSAD <- rep(counties$NAMELSAD, length(unique(final_df$date)))
+  write.csv(final_df,file = paste0(csvPath, "/", var, "_1908_1980_gridded.v3.csv")) 
+  #write.csv(final_df,file = paste0(csvPath, "/", var, "_1908_1980_gridded.v2_at_UER.csv")) 
+  end <- Sys.time()
+  print(end - begin)
+  print("complete!")
+}
+
+#shapefile path 
+shapefilePath = paste0('/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/shapefile_dir/', shapefile, '.shp')
+
+#path to save csv files to 
+csvPath <- "/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/prism_output"
+
+for (var in vars){ 
+  #get mean max temp by grid cell 
+  #calcByGrid(var = var, func = "mean", shapefilePath = shapefilePath, csvPath = csvPath)
+  calcByGrid(var = var, func = "mean", shapefilePath = shapefilePath, csvPath = csvPath)
+}
+```
+
+```{r}
+#Calculate for 1981-2023 data
+
+#Path to where the bil files exist:
+setwd=cwd <- "/Users/ERWoodburn/Desktop/erica_copy/data/cosumnes/caldor/prism_raw_monthly" 
+shapefile <- 'East_above_Almont_at_USGS'
+
+calcByGrid <- function(var, shapefilePath, func = "mean", csvPath = getwd(), crs = 4326){
+
+  # Calculate mean or sum of input var by grid cell for input raster prism data and shapefile
+  # Assumes prism data is loaded into "prism/" + var (see download_prism_data.R)
+  #
+  # Args: 
+  #   - var (character): name of prism variable-- must have corresponding folder of data 
+  #   - shapefilePath (character): path to shapefile
+  #   - func (character, optional): function to perform on data in each grid (must be either mean or sum, default to mean)
+  #   - csvPath (character, optional): path to save output csv to (default to current working directory)
+  #
+  # Returns: 
+  # saves csv file to machine
+  begin <- Sys.time()
+  print(paste0("Extracting data for ", var, "..."))
+  
+  #get path to folders containing prism data for variable 
+  dataPath <- paste(cwd, var , sep = "/")
+
+  #check to make sure inputs are valid 
+  stopifnot((tolower(func) == "mean") | (tolower(func) == "sum"))
+  stopifnot(dir.exists(dataPath)) 
+  stopifnot(file.exists(shapefilePath))
+  
+  #column name
+  dataName <- paste(func, "of", tolower(var), sep = " ")
+  
+  #used to detect CPU cores and make cluster
+  ncores <- detectCores()
+  cl <- makeCluster(ncores)
+
+  #parallelize computer with cluster cl
+  #load desired packages into each cluster
+  clusterEvalQ(cl, {library(prism)})
+
+  # Check if data download from PRISM API worked. This has downloaded empty folders for me before. If this happens, just go to the PRISM website and download the bil folders directly, and put them in the correct location in the data folder to replace the empty folder.
+  lapply(list.files(dataPath), function(x){
+    len_dir <- length(list.files(paste(dataPath,x,sep = '/')))
+    if (grepl('provisional', x, fixed = TRUE)){
+      stop(paste0("Error: ", x , " is a folder of provisional data. In order to run this script, delete provisional prism data from the prism_raw folder."))
+    }
+    if (len_dir==0){
+      stop(paste0("Error: ", x , " is an empty folder. Download data from the prism website."))
+    }
+  })
+  
+  #apply function fun to list 
+  prism_list <- parLapply(cl = cl, X = dataPath, fun = function(path) {
+    options(prism.path = path)
+    dat <- ls_prism_data() #get list of bil datatypes
+    stacks <- prism_stack(dat[1:nrow(dat),]) #get a stack of prism files
+    return(stacks)
+  })
+  stopCluster(cl)
+  
+  #load shapefile with grids 
+  counties <- read_sf(shapefilePath)
+  counties <- st_transform(counties, crs(prism_list[[1]])@projargs)
+  ext <- raster::extent(counties)
+  
+  stack <- prism_list[[1]]
+  res_list <- list()
+
+  for(i in 1:length(stack@layers)) {
+    #crop prism data to shapefile 
+    prismData <- stack@layers[[i]]
+    crop <- raster::crop(x = prismData, y = ext) 
+    vals <- exactextractr::exact_extract(crop, counties, func)
+    vals <- as.list(vals)
+    
+    #create data frame of data
+    df <- data.frame(vals) %>% tidyr::gather(key = "date", value = "data")
+    colnames(df)[2] <- dataName
+    
+    #replace date column with columns for month and year
+    date <- names(stack[[i]])
+    date <- readr::parse_number(gsub(".*4kmM3_", "", date))
+    date <- as.Date(paste0(date, "01"), "%Y%m%d")
+    df$date <- date
+    
+    #add df to list 
+    res_list[[i]] <- df
+    gc()
+  }
+  
+  final_df <- do.call(rbind, res_list)
+  #final_df$NAME<- rep(counties$NAME, length(unique(final_df$date)))
+  #final_df$GEOID <- rep(counties$GEOID, length(unique(final_df$date)))
+  #final_df$NAMELSAD <- rep(counties$NAMELSAD, length(unique(final_df$date)))
+  
+  write.csv(final_df,file = paste0(csvPath, "/", var, "_1981_2023_gridded.v3.csv")) 
+  #write.csv(final_df,file = paste0(csvPath, "/", var, "_1981_2023_gridded.v2_at_UER.csv")) 
+  end <- Sys.time()
+  print(end - begin)
+  print("complete!")
+}
+
+#shapefile path 
+shapefilePath = paste0('/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/shapefile_dir/', shapefile, '.shp')
+
+#path to save csv files to 
+csvPath <- "/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/prism_output"
+
+for (var in vars){ 
+  #get mean max temp by grid cell 
+  #calcByGrid(var = var, func = "mean", shapefilePath = shapefilePath, csvPath = csvPath)
+  calcByGrid(var = var, func = "mean", shapefilePath = shapefilePath, csvPath = csvPath)
+}
+```
+
+```{r}
+#Check pre-1981 data, if monthly and annual avg look correct
+#P1_filename=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/prism_output/ppt_1908_1980_gridded.v2_at_UER.csv")
+#T1_filename=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/prism_output/tmean_1908_1980_gridded.v2_at_UER.csv")
+P1_filename=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/prism_output/ppt_1908_1980_gridded.v3.csv")
+T1_filename=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/prism_output/tmean_1908_1980_gridded.v3.csv")
+
+
+Ptemp_1908_1980=read.csv(file=P1_filename,sep=",",header=TRUE)
+
+#These have dim 949,3; But data starts on line 2, and computes annual every 13th value (1,14,27, etc.) which need to be removed
+Ttemp_1908_1980=read.csv(file=T1_filename,sep=",",header=TRUE)
+
+T_1908_1980=subset(Ttemp_1908_1980,Ttemp_1908_1980$date!="NA")
+#For some reason Precip doesn't have dates in string, but temp does, so use that to index
+P_1908_1980=subset(Ptemp_1908_1980,Ttemp_1908_1980$date!="NA")
+
+
+#NOTE TO ADD 1981_2023 here!
+#P2_filename=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/prism_output/ppt_1981_2023_gridded.v2_at_UER.csv")
+#T2_filename=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/prism_output/tmean_1981_2023_gridded.v2_at_UER.csv")
+P2_filename=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/prism_output/ppt_1981_2023_gridded.v3.csv")
+T2_filename=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PRISM/prism_output/tmean_1981_2023_gridded.v3.csv")
+
+
+#ERW 12-2-23 this was where the typo was! Don't use temp variable for second half of timeseries
+P_1981_2023=read.csv(file=P2_filename,sep=",",header=TRUE)
+T_1981_2023=read.csv(file=T2_filename,sep=",",header=TRUE)
+
+#P_all=rbind(P_1910_1980,P_1981_2023)
+P_all=rbind(P_1908_1980,P_1981_2023)
+T_all=rbind(T_1908_1980,T_1981_2023)
+
+#Added 2-8-23
+mean_P_all=mean(P_all[,3]) #71.84
+mean_T_all=mean(T_all[,3]) #1.44
+
+#Add a numeric counter to increment colors across timeseries 
+num_months_all= 1384  #(# months = Jan 1908 through April 2023, ******Q starts Jan-1911, or month 37*******) #5/31/24 ERW NEEDS TO UPDATE
+months_counter=c(1:num_months_all)
+
+P_all['months_counter']=months_counter
+T_all['months_counter']=months_counter
+
+#7-2-2024 add print to file for Nick (although he really needs WY Annual)
+#write.csv(P_all,file = paste0(csvPath, "/", "ppt_1908_2023_gridded.v2_at_UER.csv")) 
+#write.csv(T_all,file = paste0(csvPath, "/", "tmean_1908_2023_gridded.v2_at_UER.csv")) 
+
+write.csv(P_all,file = paste0(csvPath, "/", "ppt_1908_2023_gridded.v3.csv")) 
+write.csv(T_all,file = paste0(csvPath, "/", "tmean_1908_2023_gridded.v3.csv")) 
+```
+
+```{r}
+#Read in USGS GAUGE DATA AT ALMONT
+
+#https://waterdata.usgs.gov/nwis/inventory?agency_code=USGS&site_no=09112500
+#Latitude 38°39'52",   Longitude 106°50'51"   NAD27
+#Gunnison County, Colorado, Hydrologic Unit 14020001
+#Drainage area: 289 square miles
+#Contributing drainage area: 289 square miles,
+#Datum of gage: 8,006.29 feet above   NGVD29.
+
+
+# Data for the following 1 site(s) are contained in this file
+#    USGS 09112500 EAST RIVER AT ALMONT, CO
+# -----------------------------------------------------------------------------------
+#
+# Data provided for site 09112500
+#            TS   parameter     statistic     Description
+#         18852       00060     00003     Discharge, cubic feet per second (Mean)
+#
+
+
+directory1 = "/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/USGS_09112500_EAST_RIVER_AT_ALMONT"
+setwd(directory1)
+
+Q=read.table(file="09112500.v2.nh.txt",header=FALSE,sep="\t", stringsAsFactors=FALSE)
+#plot(x=1:41053,y=Q[,4])
+
+stopt=41053
+ny=113
+nm=12
+
+days_in_wy_months=c(31,30,31,31,28,31,30,31,30,31,31,30)
+days_in_wy_months_leap=c(31,30,31,31,29,31,30,31,30,31,31,30)
+
+days_in_cal_months=c(31,28,31,30,31,30,31,31,30,31,30,31)
+days_in_cal_months_leap=c(31,29,31,30,31,30,31,31,30,31,30,31)
+
+#Sum daily Q to months - keep to calendar year
+Q.df=data.frame(Q)
+Q_monthly.df=data.frame(matrix(0,nrow=ny,ncol=nm))
+
+m=1
+y=1
+dcount=1
+
+#Start 1-1-1911, which is DAY 93
+for(d in 93:stopt){
+  #cat ("Day Month Year",d,m,y,"\n")
+  
+    #Sum Q in the right month and year;
+    #Also convert cubic feet per second to volumetric meters
+    Q_monthly.df[y,m]=Q_monthly.df[y,m]+(Q[d,4]/(3.28084^3)*(86400)) 
+    # Uncomment this to look at CFS to compare w/ USGS graphs
+    #Q_monthly.df[y,m]=Q_monthly.df[y,m]+Q[d,4] 
+    dcount=dcount+1
+
+  #Check if leap year, then 
+  #Determine if month and year increment are needed
+  #First leap year is 1912!
+  if (y%%4==2) {
+    if ((m<12)&&(dcount>(days_in_cal_months_leap[m]))) {
+      m=m+1
+      dcount=1
+    }
+  }#Check if leap year
+
+   if (y%%4!=2) {  
+    if ((m<12)&&(dcount>(days_in_cal_months[m]))) {
+      m=m+1
+      dcount=1
+    }
+   }
+  
+  if ((m==12)&&(dcount==32)) {
+    y=y+1
+    m=1
+    dcount=1
+  }
+
+}
+
+#Append another column to the df to count the years
+Q_years_counter=c(1911:(1911+ny-1))
+Q_monthly.df['years_counter']=Q_years_counter
+
+
+```
+```{r}
+a= ggplot(P_all, aes(x=P_all[,3], y=T_all[,3])) +
+  geom_point(aes(color=P_all[,4])) +
+  xlab("P  (mm)") +
+  ylab("T (deg C)") +
+  labs(color="Month Since 1910") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+ 
+b= ggplot(P_all, aes(x=P_all[,3]-mean_P_all, y=T_all[,3]-mean_T_all)) +
+  geom_point(aes(color=P_all[,4])) +
+  xlab("P Anomaly (mm)") +
+  ylab("T Anomaly (deg C)") +
+  labs(color="Month Since 1910") +
+  geom_hline(yintercept=0) +
+  geom_vline(xintercept=0)+ 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+a
+b
+```
+```{r}
+#Compute monthly averages
+#1384 months
+
+nyears=115
+#Includes 2023, omit these 4 months in avg
+#nmonths=1384
+nmonths=1380
+P_monthly_sum=array(0,dim=12)
+T_monthly_sum=array(0,dim=12)
+
+counter=1
+for (y in 1:115){
+  for (m in 1:12){
+    P_monthly_sum[m]=P_monthly_sum[m]+P_all[counter,3]
+    T_monthly_sum[m]=T_monthly_sum[m]+T_all[counter,3]
+    counter=counter+1
+  }
+}
+
+#Plot average precip for each month based on 115 years
+par(mfrow = c(2,2))
+
+plot(x=(1:12),y=P_monthly_sum[1:12]/nyears,xlab="Month",ylab="Historical Average P (mm/month)",type="l")
+plot(x=(1:12),y=T_monthly_sum[1:12]/nyears,xlab="Month",ylab="Historical Average T (deg C)",type="l")
+plot(x=T_monthly_sum[1:12]/nyears,y=P_monthly_sum[1:12]/nyears,xlab="Historical Average T (deg C)",ylab="Historical Average P (mm/month)",type="l")
+```
+
+```{r}
+#USE THIS TO MAKE ALL CONSISTENT: 1911-2023
+ny=112
+#Create df of P_all and T_all to be same format of Q_monthly
+P_monthly.df=data.frame(matrix(0,nrow=ny,ncol=nm))
+T_monthly.df=data.frame(matrix(0,nrow=ny,ncol=nm))
+
+
+m=1
+y=1
+count=1
+#Start at month 22, which is 10-1-1910, same as Q_monthly.df 
+#Start at month 25, which is 1-1-1910, same as Q_monthly.df 
+#TYPO WAS HERE! ********USE MONTH 37, which is 1-1-1911, same as Q_monthly.df!**********
+for (i in 37:1384){
+
+    P_monthly.df[y,m]=P_all[i,3]
+    T_monthly.df[y,m]=T_all[i,3]
+    m=m+1
+    
+    if (m==13){
+      m=1
+      y=y+1
+    }
+    
+  #cat ("Month",i, "is binned to year, mon:",y,m,"\n")
+  
+}
+
+#Append another column to the df to count the years
+T_years_counter=c(1911:2023)
+T_monthly.df['years_counter']=T_years_counter
+P_monthly.df['years_counter']=T_years_counter
+
+#Remove 2023?
+Q_monthly.df2=Q_monthly.df[-c(113),]
+P_monthly.df2=P_monthly.df[-c(113),]
+T_monthly.df2=T_monthly.df[-c(113),]
+
+
+
+#Calculate Annual of Q,P,T, by WY no CY
+Q_annual=data.frame(vector(length=111))
+T_annual=data.frame(vector(length=111))
+P_annual=data.frame(vector(length=111))
+
+
+#Start w WY1912!*******************
+for (y in 1912:2022){
+    
+  for (m in 1:9){
+    Q_annual[y-1911,1]=Q_annual[y-1911,1]+Q_monthly.df[y-1911+1,m]
+    T_annual[y-1911,1]=T_annual[y-1911,1]+T_monthly.df[y-1911+1,m]
+    P_annual[y-1911,1]=P_annual[y-1911,1]+P_monthly.df[y-1911+1,m]
+  }
+  for (m in 10:nm){
+    Q_annual[y-1911,1]=Q_annual[y-1911,1]+Q_monthly.df[y-1911,m]
+    T_annual[y-1911,1]=T_annual[y-1911,1]+T_monthly.df[y-1911,m]
+    P_annual[y-1911,1]=P_annual[y-1911,1]+P_monthly.df[y-1911,m]
+  }
+}
+  
+
+#par(mfrow = c(2,1))
+plot(x=(1912:2022),y=Q_annual[,1],xlab="WY",ylab="Annual Q (m^3)")
+plot(x=(1912:2022),y=T_annual[,1]/12,xlab="WY",ylab="Mean Annual T (deg C)")
+plot(x=(1912:2022),y=P_annual[,1],xlab="WY",ylab=" Annual P (mm)")
+
+plot(x=T_annual[,1]/12,y=P_annual[,1])
+
+
+#7-2-24 print annual to files for Nick
+#write.csv(P_annual,file = paste0(csvPath, "/annual_post_process/ppt_annual_1908_2023.v2_at_UER.corr.csv")) 
+#write.csv(T_annual,file = paste0(csvPath, "/annual_post_process/tmean_annual_1908_2023.v2_at_UER.corr.csv")) 
+
+write.csv(P_annual,file = paste0(csvPath, "/annual_post_process/ppt_annual_1908_2023.v3.corr.csv")) 
+write.csv(T_annual,file = paste0(csvPath, "/annual_post_process/tmean_annual_1908_2023.v3.corr.csv")) 
+```
+
+
+
+```{r}
+
+################## Fig A5a ################## 
+
+
+#Now annual runoff efficiency
+
+#SCATTER THE TWO, but account for area of watershed
+#289 square miles = 748506564 square meters
+Area_Almont = 748506564
+#Area_UER=8471*100*100 # in m^2
+Area_UER=8471*100*100 # in m^2
+
+RE_years_counter=c(1912:2022)
+
+Q_annual['years_counter']=RE_years_counter
+P_annual['years_counter']=RE_years_counter
+T_annual['years_counter']=RE_years_counter
+
+
+
+
+fit.lm = lm((Q_annual[,1]/Area_Almont*1000 ~ P_annual[,1] ))
+fit.lm
+summary(fit.lm)
+ggplot(Q_annual, aes(x=P_annual[,1], y=(Q_annual[,1])/Area_Almont*1000)) +
+  geom_point(aes(color=P_annual[,2])) +     
+      geom_abline(slope = coef(fit.lm)[["P_annual[, 1]"]], 
+              intercept = coef(fit.lm)[["(Intercept)"]],col="gray") +
+
+  ylab(bquote('Q Annual '(mm))) +
+  xlab("P Annual (mm)") +
+  labs(color="Water Year") +
+  #geom_hline(yintercept=0) +
+  #geom_vline(xintercept=0)+ 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  panel.background = element_blank(), axis.line = element_line(colour = "black"),
+  axis.title.x = element_text(size = 17),
+  axis.text.x = element_text(size = 15),
+  axis.text.y = element_text(size = 15),
+  axis.title.y = element_text(size = 17),
+  legend.title = element_text(size=17),
+  legend.text = element_text(size=14))
+  
+```
+
+
+
+```{r}
+#Fig A5b
+fit.lm = lm((Q_annual[,1]/Area_Almont*1000 ~ (T_annual[,1]) ))
+fit.lm
+summary(fit.lm)
+ggplot(Q_annual, aes(x=(T_annual[,1]/12), y=(Q_annual[,1])/Area_Almont*1000)) +
+      geom_abline(slope = coef(fit.lm)[["T_annual[, 1]"]]*12, 
+              intercept = coef(fit.lm)[["(Intercept)"]],col="gray") +
+  geom_point(aes(color=P_annual[,2])) +              
+  ylab(bquote('Q Annual '(mm))) +
+  xlab("T Annual (deg C)") +
+  labs(color="Water Year") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  panel.background = element_blank(), axis.line = element_line(colour = "black"),
+  axis.title.x = element_text(size = 17),
+  axis.text.x = element_text(size = 15),
+  axis.text.y = element_text(size = 15),
+  axis.title.y = element_text(size = 17),
+  legend.title = element_text(size=17),
+  legend.text = element_text(size=14))
+```
+
+
+```{r}
+# Fig A5c (step-wise additions)
+fit.lm = lm((Q_annual[,1]/(P_annual[,1]/1000*Area_Almont)) ~ Q_annual[,2] )
+fit.lm
+summary(fit.lm)
+
+#This is a second trend line starting in 1935, after the data gap
+fit.lm_gap = lm((Q_annual[24:111,1]/(P_annual[24:111,1]/1000*Area_Almont)) ~ Q_annual[24:111,2] )
+fit.lm_gap
+summary(fit.lm_gap)
+
+#ggplot(Q_annual, aes(x=Q_annual[,2], y=(Q_annual[,1]/((P_annual[,1]/1000)*Area_Almont)))) +
+      #geom_abline(slope = -0.000633, intercept = 1.5521,col="gray") +
+
+ggplot(Q_annual, aes(x=Q_annual[,2], y=(Q_annual[,1]/((P_annual[,1]/1000*Area_Almont))))) +
+  geom_point(aes(color=T_annual[,1]/12),cex=P_annual[,1]/400) +    
+        geom_abline(slope = coef(fit.lm)[["Q_annual[, 2]"]], 
+              intercept = coef(fit.lm)[["(Intercept)"]],col="gray") +
+  
+        #Whole line
+        #geom_abline(slope = coef(fit.lm_gap)[["Q_annual[24:111, 2]"]], 
+        #     intercept = coef(fit.lm_gap)[["(Intercept)"]],col="darkred",lty=2) +
+  
+        #1935 line forward
+        #RE = -0.0002073 x + 0.8315440
+        #RE_1935 = -0.0002073(1935) + 0.8315440 = 0.4304
+        #RE_2022 = -0.0002073(2022) + 0.8315440 = 0.4123
+        geom_segment(aes(x = 1935, y = 0.4304, xend = 2022, yend = 0.4123),col="darkred",lty=2) +
+        #geom_abline(slope=coef(fit.lm_gap)[["Q_annual[24:111, 2]"]],
+        #     intercept = 0.4349370,col="green") +
+  
+  ylab("Runoff Efficiency (-)") +
+  xlab("Water Year") +
+  labs(color="Avg Annual T") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  panel.background = element_blank(), axis.line = element_line(colour = "black"),
+  axis.title.x = element_text(size = 16),
+  axis.text.x = element_text(size = 13),
+  axis.text.y = element_text(size = 13),
+  axis.title.y = element_text(size = 16),
+  legend.title = element_text(size=13),
+  legend.text = element_text(size=13))
+
+
+
+```
+```{r}
+#Load machine learning gap-filled Almont Q based on Taylor reservoir flows 
+
+directory1 = "/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/USGS_09112500_EAST_RIVER_AT_ALMONT_GAP_FILLED"
+setwd(directory1)
+
+Q_gap_filled=read.table(file="discharge_East_ML.csv",header=TRUE,sep=",",stringsAsFactors=FALSE)
+plot(x=1:41644,y=Q_gap_filled[,6],type="l") #gap-filled based on Taylor Q
+lines(x=1:41644,y=Q_gap_filled[,4],type="l",col="blue") #original
+```
+
+
+```{r}
+stopt=41053
+#stopt_gap=41644
+ny=113
+nm=12
+
+days_in_wy_months=c(31,30,31,31,28,31,30,31,30,31,31,30)
+days_in_wy_months_leap=c(31,30,31,31,29,31,30,31,30,31,31,30)
+
+days_in_cal_months=c(31,28,31,30,31,30,31,31,30,31,30,31)
+days_in_cal_months_leap=c(31,29,31,30,31,30,31,31,30,31,30,31)
+
+#Sum daily Q to months - keep to calendar year
+#Q_gap_filled.df=data.frame(Q)
+Q_gap_filled_monthly.df=data.frame(matrix(0,nrow=ny,ncol=nm))
+
+m=1
+y=1
+dcount=1
+
+#Start 1-1-1911, which is DAY 159 for the gap-filled dataset
+for(d in 159:stopt){
+  #cat ("Day Month Year",d,m,y,"\n")
+  
+    #Sum Q in the right month and year;
+    #Also convert cubic feet per second to volumetric meters
+    #Q_gap_filled_monthly.df[y,m]=Q_gap_filled_monthly.df[y,m]+(Q_gap_filled[d,6]/(3.28084^3)*(86400)) 
+    Q_gap_filled_monthly.df[y,m]=Q_gap_filled_monthly.df[y,m]+(Q_gap_filled[d,6])*86400 
+    # Uncomment this to look at CFS to compare w/ USGS graphs
+    #Q_monthly.df[y,m]=Q_monthly.df[y,m]+Q[d,4] 
+    dcount=dcount+1
+
+  #Check if leap year, then 
+  #Determine if month and year increment are needed
+  #First leap year is 1912!
+  if (y%%4==2) {
+    if ((m<12)&&(dcount>(days_in_cal_months_leap[m]))) {
+      m=m+1
+      dcount=1
+    }
+  }#Check if leap year
+
+   if (y%%4!=2) {  
+    if ((m<12)&&(dcount>(days_in_cal_months[m]))) {
+      m=m+1
+      dcount=1
+    }
+   }
+  
+  if ((m==12)&&(dcount==32)) {
+    y=y+1
+    m=1
+    dcount=1
+  }
+
+}
+
+#Append another column to the df to count the years
+Q_years_counter=c(1911:(1911+ny-1))
+Q_gap_filled_monthly.df['years_counter']=Q_years_counter
+
+#See if January for both align, minus data gap 
+plot(y=Q_gap_filled_monthly.df[,1],x=Q_gap_filled_monthly.df[,13])
+lines(y=Q_monthly.df[,1],x=Q_monthly.df[,13])
+
+#Dec
+plot(y=Q_gap_filled_monthly.df[,12],x=Q_gap_filled_monthly.df[,13])
+lines(y=Q_monthly.df[,12],x=Q_monthly.df[,13])
+```
+```{r}
+#GAP-FILLED Q; Calculate Annual of Q by WY no CY
+
+Q_gap_filled_annual=data.frame(vector(length=111))
+
+
+#Start w WY1912!*******************
+for (y in 1912:2022){
+    
+  for (m in 1:9){
+    Q_gap_filled_annual[y-1911,1]=Q_gap_filled_annual[y-1911,1]+Q_gap_filled_monthly.df[y-1911+1,m]
+  }
+  for (m in 10:nm){
+    Q_gap_filled_annual[y-1911,1]=Q_gap_filled_annual[y-1911,1]+Q_gap_filled_monthly.df[y-1911,m]
+  }
+}
+  
+
+plot(x=(1912:2022),y=Q_gap_filled_annual[,1],xlab="WY",ylab="Annual Q (m^3)")
+lines(x=(1912:2022),y=Q_annual[,1])
+```
+```{r}
+plot(y=Q_gap_filled_annual[,1]/Area_Almont*1000,x=P_annual[,1],col="orange")
+lines(y=Q_annual[,1]/Area_Almont*1000,x=P_annual[,1],type="p")
+
+plot(y=Q_gap_filled_annual[,1]/(P_annual[,1]/1000*Area_Almont),x=P_annual[,2],col="orange",ylab="RE (-)")
+lines(y=Q_annual[,1]/(P_annual[,1]/1000*Area_Almont),x=P_annual[,2],type="p")
+```
+
+
+```{r}
+# Fig A5c, final #
+# With gap filled years 1922-1934 based on ML from Taylor Reservoir Flows #
+
+#Trend line with data gap (GRAY)
+fit.lm = lm((Q_annual[,1]/(P_annual[,1]/1000*Area_Almont)) ~ Q_annual[,2] )
+fit.lm
+summary(fit.lm)
+
+#This is a second trend line starting in 1935, after the data gap (RED)
+fit.lm_gap = lm((Q_annual[24:111,1]/(P_annual[24:111,1]/1000*Area_Almont)) ~ Q_annual[24:111,2] )
+fit.lm_gap
+summary(fit.lm_gap)
+
+#3rd trend line of full timeseries including gap-filled data (DARK ORANGE)
+fit.lm_gap_filled = lm((Q_gap_filled_annual[,1]/(P_annual[,1]/1000*Area_Almont)) ~ Q_annual[,2] )
+fit.lm_gap_filled
+summary(fit.lm_gap_filled)
+
+
+gap_year_df=data.frame(Q_gap_filled_annual[11:23,1])
+gap_years=c(P_annual[11:23,2])
+gap_yearsp=c(P_annual[11:23,1])
+gap_year_df$gap_years=gap_years
+gap_year_df$gap_yearsp=gap_yearsp
+
+
+
+ggplot(Q_annual, aes(x=Q_annual[,2], y=(Q_annual[,1]/((P_annual[,1]/1000*Area_Almont))))) + 
+  geom_point(aes(color=T_annual[,1]/12),cex=P_annual[,1]/400) + 
+  ylab("Runoff Efficiency (-)") + 
+  xlab("WY") + 
+  labs(color="Avg Annual T") + 
+  geom_point(data=gap_year_df, aes(x=gap_year_df[,2], y=(gap_year_df[,1]/((gap_year_df[,3]/1000*Area_Almont)))),colour="darkorange3",cex=gap_year_df[,3]/400) +
+
+        #Whole line with data gap
+        geom_abline(slope = coef(fit.lm)[["Q_annual[, 2]"]], 
+              intercept = coef(fit.lm)[["(Intercept)"]],col="gray") +
+  
+        #1935 line forward
+        #RE = -0.0002073 x + 0.8315440
+        #RE_1935 = -0.0002073(1935) + 0.8315440 = 0.4304
+        #RE_2022 = -0.0002073(2022) + 0.8315440 = 0.4123
+        geom_segment(aes(x = 1935, y = 0.4304, xend = 2022, yend = 0.4123),col="darkred",lty=3) +
+
+       #Whole line gap filled
+       geom_abline(slope = coef(fit.lm_gap_filled)[["Q_annual[, 2]"]], 
+              intercept = coef(fit.lm_gap_filled)[["(Intercept)"]],col="darkorange3",lty=1) +
+  
+  
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+  panel.background = element_blank(), axis.line = element_line(colour = "black"),
+  axis.title.x = element_text(size = 16),
+  axis.text.x = element_text(size = 13),
+  axis.text.y = element_text(size = 13),
+  axis.title.y = element_text(size = 16),
+  legend.title = element_text(size=13),
+  legend.text = element_text(size=13),
+  aspect.ratio=3/5)
+
+#Slopes gray: -0.1% / decade or 10% / century 
+#Coefficients:
+#  (Intercept)  Q_annual[, 2]  
+#     2.551070      -0.001072  
+
+#Slope red: -0.2%/decade or 2% / century 
+#Coefficients:
+#        (Intercept)  Q_annual[24:111, 2]  
+#          0.8315440           -0.0002073 
+
+#Slope orange: -1.6% /decade or 16 % / century 
+#Coefficients:
+#  (Intercept)  Q_annual[, 2]  
+#     3.714521      -0.001656  
+```
+
+```{r}
+#Calculate mean and sd of RE
+#No gap fill
+mean(Q_annual[,1]/(P_annual[,1]/1000*Area_Almont), na.rm = TRUE) #0.4374222
+sd(Q_annual[,1]/(P_annual[,1]/1000*Area_Almont), na.rm = TRUE) #0.09395554
+
+mean(Q_gap_filled_annual[,1]/(P_annual[,1]/1000*Area_Almont), na.rm = TRUE) #0.4578879
+sd(Q_gap_filled_annual[,1]/(P_annual[,1]/1000*Area_Almont), na.rm = TRUE) #0.1145065
+
+
+```
+```{r}
+#Almont Streamflow Statistics and Trends 
+
+#Calculate mean and sd of Q, in mm/y
+#No gap fill
+mean(Q_annual[,1]/Area_Almont*1000, na.rm = TRUE) #390.2576
+sd(Q_annual[,1]/Area_Almont*1000, na.rm = TRUE) #125.3212
+
+fit.lm = lm((Q_annual[,1]/Area_Almont*1000) ~ Q_annual[,2] )
+fit.lm
+summary(fit.lm)
+#Coefficients:
+#               Estimate Std. Error t value Pr(>|t|)   
+#(Intercept)   2333.7641   797.6430   2.926  0.00429 **
+#Q_annual[, 2]   -0.9855     0.4044  -2.437  0.01666 * 
+
+#Multiple R-squared:  0.05825,	Adjusted R-squared:  0.04844 
+#F-statistic: 5.938 on 1 and 96 DF,  p-value: 0.01666
+
+plot(y=(Q_annual[,1]/Area_Almont*1000),x=Q_annual[,2])
+abline(lm((Q_annual[,1]/Area_Almont*1000) ~ (Q_annual[,2])), data = Q_annual, col = "black")
+```
+
+```{r}
+################################################## Fig 2 a #########################################################
+# #HOURLY PSR 
+
+ for (yr in 15:21) {
+   scenario=c("baseline","2.5","4.0")
+   for (s in 1:3) {
+  
+    scenario_psr=c("precip","rainfall","snowfall")
+    for (ss in 1:3) {
+      #var_in=data.frame(0,nrow=8760,ncol=1)
+      var_in=sprintf("%s_%s_wy%2d",scenario_psr[ss],scenario[s],yr)
+      #pass the year-specific p to temporary variables
+      name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/forcing/%s_sum.%s_wy20%2d.txt",scenario_psr[ss],scenario[s],yr)
+      file_in=read.table(file=name,header=FALSE,sep="\n")
+      assign(var_in,file_in)
+      #print(name)
+    } #ss
+   } #s
+ } #wy
+
+#Now do cumulative rain and snow for the year
+ for (yr in 15:21) {
+   scenario=c("baseline","2.5","4.0")
+   for (s in 1:3) {
+  
+    scenario_psr=c("precip","rainfall","snowfall")
+    for (ss in 1:3) {
+      
+      #Call variable 
+      dat_in=sprintf("%s_%s_wy%2d",scenario_psr[ss],scenario[s],yr)
+      temp=data.frame(0,nrow=8760,ncol=1)
+      temp=eval(as.name(paste(dat_in)))
+      var_out=sprintf("cum_%s_%s_wy%2d",scenario_psr[ss],scenario[s],yr)
+
+      cum_temp=data.frame(0,nrow=8760,ncol=1)
+
+      for (h in 2:8760) {
+        cum_temp[h,1]=cum_temp[h-1,1]+temp[h,1]
+      }
+      assign(var_out,cum_temp)
+
+    }
+   }
+ }
+```
+
+
+```{r}
+# #HOURLY PSR 
+
+ for (yr in 15:21) {
+   scenario=c("baseline","2.5","4.0")
+   for (s in 1:3) {
+  
+    scenario_psr=c("precip","rainfall","snowfall")
+    for (ss in 1:3) {
+      #var_in=data.frame(0,nrow=8760,ncol=1)
+      var_in=sprintf("%s_%s_wy%2d",scenario_psr[ss],scenario[s],yr)
+      #pass the year-specific p to temporary variables
+      name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/forcing/%s_sum.%s_wy20%2d.txt",scenario_psr[ss],scenario[s],yr)
+      file_in=read.table(file=name,header=FALSE,sep="\n")
+      assign(var_in,file_in)
+      print(name)
+    } #ss
+   } #s
+ } #wy
+
+#Now do cumulative rain and snow for the year
+ for (yr in 15:21) {
+   scenario=c("baseline","2.5","4.0")
+   for (s in 1:3) {
+  
+    scenario_psr=c("precip","rainfall","snowfall")
+    for (ss in 1:3) {
+      
+      #Call variable 
+      dat_in=sprintf("%s_%s_wy%2d",scenario_psr[ss],scenario[s],yr)
+      temp=data.frame(0,nrow=8760,ncol=1)
+      temp=eval(as.name(paste(dat_in)))
+      var_out=sprintf("cum_%s_%s_wy%2d",scenario_psr[ss],scenario[s],yr)
+
+      cum_temp=data.frame(0,nrow=8760,ncol=1)
+
+      for (h in 2:8760) {
+        cum_temp[h,1]=cum_temp[h-1,1]+temp[h,1]
+      }
+      assign(var_out,cum_temp)
+
+    }
+   }
+ }
+```
+
+
+```{r}
+x_bottom=c(1:8759)/(c(1:8759))-1
+
+#One timeseries R:S fractions, with warming
+plot(x=(1:8759),y=cum_rainfall_4.0_wy15[1:8759,1]+cum_snowfall_4.0_wy15[1:8759,1],col="black",type="l",ylim=c(0,750),xlim=c(0,(7*8760)),xlab=" ",ylab="Cumulative Precipitation (mm)",xaxt="n",cex.axis=1.5,cex.lab=1.5)
+polygon(x=c(1:8759,8759,8759:1),y=c(x_bottom,cum_precip_4.0_wy15[8759,1],cum_precip_4.0_wy15[8759:1,1]),col="lightblue4",lwd=0.5)
+polygon(x=c(1:8759,8759,8759:1),y=c(cum_rainfall_baseline_wy15[1:8759,1],cum_precip_baseline_wy15[8759,1],cum_precip_4.0_wy15[8759:1,1]),col="lightblue1",lwd=0.5)
+polygon(x=c(1:8759,8759,8759:1),y=c(cum_rainfall_baseline_wy15[1:8759,1],cum_precip_baseline_wy15[8759,1],cum_rainfall_2.5_wy15[8759:1,1]),col="goldenrod1",lwd=0.5) #addition of rain from 2.5 deg
+polygon(x=c(1:8759,8759,8759:1),y=c(cum_rainfall_2.5_wy15[1:8759,1],cum_precip_2.5_wy15[8759,1],cum_rainfall_4.0_wy15[8759:1,1]),col="darkorange3",lwd=0.5) #addition of rain from 4 deg
+
+up=8759
+lines(x=((1+up):(8759+up)),y=cum_rainfall_4.0_wy16[1:8759,1]+cum_snowfall_4.0_wy16[1:8759,1],col="black",type="l")
+polygon(x=c(((1+up):(8759+up)),(8759+up),(8759+up):(1+up)),y=c(x_bottom,cum_precip_4.0_wy16[8759,1],cum_precip_4.0_wy16[8759:1,1]),col="lightblue4",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy16[1:8759,1],cum_precip_baseline_wy16[8759,1],cum_precip_4.0_wy16[8759:1,1]),col="lightblue1",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy16[1:8759,1],cum_precip_baseline_wy16[8759,1],cum_rainfall_2.5_wy16[8759:1,1]),col="goldenrod1",lwd=0.5) #addition of rain from 2.5 deg
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_2.5_wy16[1:8759,1],cum_precip_2.5_wy16[8759,1],cum_rainfall_4.0_wy16[8759:1,1]),col="darkorange3",lwd=0.5) #addition of rain from 4 deg
+
+up=(8759*2)
+lines(x=((1+up):(8759+up)),y=cum_rainfall_4.0_wy17[1:8759,1]+cum_snowfall_4.0_wy17[1:8759,1],col="black",type="l")
+polygon(x=c(((1+up):(8759+up)),(8759+up),(8759+up):(1+up)),y=c(x_bottom,cum_precip_4.0_wy17[8759,1],cum_precip_4.0_wy17[8759:1,1]),col="lightblue4",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy17[1:8759,1],cum_precip_baseline_wy17[8759,1],cum_precip_4.0_wy17[8759:1,1]),col="lightblue1",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy17[1:8759,1],cum_precip_baseline_wy17[8759,1],cum_rainfall_2.5_wy17[8759:1,1]),col="goldenrod1",lwd=0.5) #addition of rain from 2.5 deg
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_2.5_wy17[1:8759,1],cum_precip_2.5_wy17[8759,1],cum_rainfall_4.0_wy17[8759:1,1]),col="darkorange3",lwd=0.5) #addition of rain from 4 deg
+
+up=(8759*3)
+lines(x=((1+up):(8759+up)),y=cum_rainfall_4.0_wy18[1:8759,1]+cum_snowfall_4.0_wy18[1:8759,1],col="black",type="l")
+polygon(x=c(((1+up):(8759+up)),(8759+up),(8759+up):(1+up)),y=c(x_bottom,cum_precip_4.0_wy18[8759,1],cum_precip_4.0_wy18[8759:1,1]),col="lightblue4",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy18[1:8759,1],cum_precip_baseline_wy18[8759,1],cum_precip_4.0_wy18[8759:1,1]),col="lightblue1",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy18[1:8759,1],cum_precip_baseline_wy18[8759,1],cum_rainfall_2.5_wy18[8759:1,1]),col="goldenrod1",lwd=0.5) #addition of rain from 2.5 deg
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_2.5_wy18[1:8759,1],cum_precip_2.5_wy18[8759,1],cum_rainfall_4.0_wy18[8759:1,1]),col="darkorange3",lwd=0.5) #addition of rain from 4 deg
+
+up=(8759*4)
+lines(x=((1+up):(8759+up)),y=cum_rainfall_4.0_wy19[1:8759,1]+cum_snowfall_4.0_wy19[1:8759,1],col="black",type="l")
+polygon(x=c(((1+up):(8759+up)),(8759+up),(8759+up):(1+up)),y=c(x_bottom,cum_precip_4.0_wy19[8759,1],cum_precip_4.0_wy19[8759:1,1]),col="lightblue4",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy19[1:8759,1],cum_precip_baseline_wy19[8759,1],cum_precip_4.0_wy19[8759:1,1]),col="lightblue1",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy19[1:8759,1],cum_precip_baseline_wy19[8759,1],cum_rainfall_2.5_wy19[8759:1,1]),col="goldenrod1",lwd=0.5) #addition of rain from 2.5 deg
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_2.5_wy19[1:8759,1],cum_precip_2.5_wy19[8759,1],cum_rainfall_4.0_wy19[8759:1,1]),col="darkorange3",lwd=0.5) #addition of rain from 4 deg
+
+up=(8759*5)
+lines(x=((1+up):(8759+up)),y=cum_rainfall_4.0_wy20[1:8759,1]+cum_snowfall_4.0_wy20[1:8759,1],col="black",type="l")
+polygon(x=c(((1+up):(8759+up)),(8759+up),(8759+up):(1+up)),y=c(x_bottom,cum_precip_4.0_wy20[8759,1],cum_precip_4.0_wy20[8759:1,1]),col="lightblue4",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy20[1:8759,1],cum_precip_baseline_wy20[8759,1],cum_precip_4.0_wy20[8759:1,1]),col="lightblue1",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy20[1:8759,1],cum_precip_baseline_wy20[8759,1],cum_rainfall_2.5_wy20[8759:1,1]),col="goldenrod1",lwd=0.5) #addition of rain from 2.5 deg
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_2.5_wy20[1:8759,1],cum_precip_2.5_wy20[8759,1],cum_rainfall_4.0_wy20[8759:1,1]),col="darkorange3",lwd=0.5) #addition of rain from 4 deg
+
+up=(8759*6)
+lines(x=((1+up):(8759+up)),y=cum_rainfall_4.0_wy21[1:8759,1]+cum_snowfall_4.0_wy21[1:8759,1],col="black",type="l")
+polygon(x=c(((1+up):(8759+up)),(8759+up),(8759+up):(1+up)),y=c(x_bottom,cum_precip_4.0_wy21[8759,1],cum_precip_4.0_wy21[8759:1,1]),col="lightblue4",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy21[1:8759,1],cum_precip_baseline_wy21[8759,1],cum_precip_4.0_wy21[8759:1,1]),col="lightblue1",lwd=0.5)
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_baseline_wy21[1:8759,1],cum_precip_baseline_wy21[8759,1],cum_rainfall_2.5_wy21[8759:1,1]),col="goldenrod1",lwd=0.5) #addition of rain from 2.5 deg
+polygon(x=c((1+up):(8759+up),(8759+up),(8759+up):(1+up)),y=c(cum_rainfall_2.5_wy21[1:8759,1],cum_precip_2.5_wy21[8759,1],cum_rainfall_4.0_wy21[8759:1,1]),col="darkorange3",lwd=0.5) #addition of rain from 4 deg
+
+```
+```{r}
+#Fig 2b relies on additional data, so plots out of order below#
+```
+
+
+
+```{r}
+########################################################## FIGURE 3a ########################################################## 
+#Calculate water budget bar graphs
+nd=365
+nh=8760
+ny=7
+ns=8
+
+#Precipitation 
+for (yr in 15:22)  {
+  #BASELINE
+  #Read in files
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/precip_analysis/bl_wy20%2d.precip_tot_subbasins.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("precip_bl_wy%2d",yr)
+  assign(var_in,file_in)
+
+  #cat("Yr is ", yr, "\n")
+}
+
+#Calculate daily and annual sum for each sub-basin
+
+#DAILY SUMS
+for (yr in 15:22) {
+  
+  #BASELINE DAY SUM
+  day_temp=matrix(0,nrow=nd,ncol=ns)
+  #pass the year-specific p to temporary variables
+  p_name=sprintf("precip_bl_wy%2d",yr)
+  p=eval(as.name(paste(p_name)))
+  
+  for (s in 1:ns) {
+    d_count=1
+    for (d in 1:nd) {
+      d_start=(d_count*24)-23
+      d_end=d_start+23
+  
+      for (h in d_start:d_end) {
+          day_temp[d_count,s]=day_temp[d_count,s]+p[h,s+2]
+          if (h==d_end) {
+            d_count=d_count+1
+            #cat("End day number", d_count, " at hour ", h, "\n")
+          }
+      }#hours
+    }#days 
+
+  }#subbasin
+  #Pass back the yr-specific cumulative values back from temporary variables 
+  day_name=sprintf("day_precip_bl_wy%2d",yr)
+  assign(day_name,day_temp)
+  
+}#yrs
+  
+#plot(x=(1:365),y=day_precip_bl_wy15[,1],type="l")  
+#lines(x=(1:365),y=day_precip_bl_wy16[,1],type="l",col="red")
+
+
+#YRLY SUMS
+for (yr in 15:22) {
+  
+  #BASELINE **YEAR** SUM
+  year_temp=array(0,ns)
+  #pass the year-specific p to temporary variables
+  p_name=sprintf("precip_bl_wy%2d",yr)
+  p=eval(as.name(paste(p_name)))
+  
+  for (s in 1:ns) {
+      for (h in 1:nh) {
+          if (is.na(p[h,s+2])==FALSE) {
+            year_temp[s]=year_temp[s]+p[h,s+2]
+            #cat(h," ",s," ",p[h,s+2],"\n")
+          }
+          #if (is.na(p[h,s+2])==TRUE) {
+          #  cat("NA at ", h," ",s," ",p[h,s+2],"\n")
+          #}
+      }#hours
+  }#subbasin
+  #Pass back the yr-specific cumulative values back from temporary variables 
+  year_name=sprintf("year_precip_bl_wy%2d",yr)
+  assign(year_name,year_temp)
+  
+}#yrs
+
+#Append years together for bar graph
+all_year_precip_bl=cbind(year_precip_bl_wy15,year_precip_bl_wy16,year_precip_bl_wy17,year_precip_bl_wy18,year_precip_bl_wy19,year_precip_bl_wy20,year_precip_bl_wy21,year_precip_bl_wy22)
+
+#all_year_precip_bl
+
+
+
+
+
+
+
+
+#Read in groundwater storage
+
+for (yr in 15:21)  {
+  #BASELINE
+  #Read in files
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy20%2d.groundwater_volume_subbasins.txt",yr)
+  file_name2=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy20%2d.vadosezone_volume_subbasins.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  file_in2=read.csv(file=file_name2,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("gw_bl_wy%2d",yr)
+  var_in2=sprintf("vz_bl_wy%2d",yr)
+  assign(var_in,file_in)
+  assign(var_in2,file_in2)
+  
+  #2.5
+  #Read in files
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/2.5_wy20%2d.groundwater_volume_subbasins.txt",yr)
+  file_name2=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/2.5_wy20%2d.vadosezone_volume_subbasins.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  file_in2=read.csv(file=file_name2,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("gw_2.5_wy%2d",yr)
+  var_in2=sprintf("vz_2.5_wy%2d",yr)
+  assign(var_in,file_in)
+  assign(var_in2,file_in2)
+  
+  #4.0
+  #Read in files
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/4.0_wy20%2d.groundwater_volume_subbasins.txt",yr)
+  file_name2=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/4.0_wy20%2d.vadosezone_volume_subbasins.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  file_in2=read.csv(file=file_name2,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("gw_4.0_wy%2d",yr)
+  var_in2=sprintf("vz_4.0_wy%2d",yr)
+  assign(var_in,file_in)
+  assign(var_in2,file_in2) 
+  
+  cat("Yr is ", yr, "\n")
+}
+```
+
+```{r}
+for (yr in 15:21)  {
+    var_in1=sprintf("stor_tot_bl_wy%2d",yr)
+    var_in2=sprintf("stor_tot_2.5_wy%2d",yr)
+    var_in3=sprintf("stor_tot_4.0_wy%2d",yr)
+    temp=array(0)
+    assign(var_in1,temp)
+    assign(var_in2,temp)
+    assign(var_in3,temp)
+}
+
+for (h in 1:nh)  {
+stor_tot_bl_wy15[h]=as.array(sum(gw_bl_wy15[h,3:10])+sum(vz_bl_wy15[h,3:10]))
+stor_tot_bl_wy16[h]=as.array(sum(gw_bl_wy16[h,3:10])+sum(vz_bl_wy16[h,3:10]))
+stor_tot_bl_wy17[h]=as.array(sum(gw_bl_wy17[h,3:10])+sum(vz_bl_wy17[h,3:10]))
+stor_tot_bl_wy18[h]=as.array(sum(gw_bl_wy18[h,3:10])+sum(vz_bl_wy18[h,3:10]))
+stor_tot_bl_wy19[h]=as.array(sum(gw_bl_wy19[h,3:10])+sum(vz_bl_wy19[h,3:10]))
+stor_tot_bl_wy20[h]=as.array(sum(gw_bl_wy20[h,3:10])+sum(vz_bl_wy20[h,3:10]))
+stor_tot_bl_wy21[h]=as.array(sum(gw_bl_wy21[h,3:10])+sum(vz_bl_wy21[h,3:10]))
+#stor_tot_bl_wy22[h]=as.array(sum(gw_bl_wy22[h,3:10])+sum(vz_bl_wy22[h,3:10]))
+
+stor_tot_2.5_wy15[h]=as.array(sum(gw_2.5_wy15[h,3:10])+sum(vz_2.5_wy15[h,3:10]))
+stor_tot_2.5_wy16[h]=as.array(sum(gw_2.5_wy16[h,3:10])+sum(vz_2.5_wy16[h,3:10]))
+stor_tot_2.5_wy17[h]=as.array(sum(gw_2.5_wy17[h,3:10])+sum(vz_2.5_wy17[h,3:10]))
+stor_tot_2.5_wy18[h]=as.array(sum(gw_2.5_wy18[h,3:10])+sum(vz_2.5_wy18[h,3:10]))
+stor_tot_2.5_wy19[h]=as.array(sum(gw_2.5_wy19[h,3:10])+sum(vz_2.5_wy19[h,3:10]))
+stor_tot_2.5_wy20[h]=as.array(sum(gw_2.5_wy20[h,3:10])+sum(vz_2.5_wy20[h,3:10]))
+stor_tot_2.5_wy21[h]=as.array(sum(gw_2.5_wy21[h,3:10])+sum(vz_2.5_wy21[h,3:10]))
+#stor_tot_2.5_wy22[h]=as.array(sum(gw_2.5_wy22[h,3:10])+sum(vz_2.5_wy22[h,3:10]))
+
+stor_tot_4.0_wy15[h]=as.array(sum(gw_4.0_wy15[h,3:10])+sum(vz_4.0_wy15[h,3:10]))
+stor_tot_4.0_wy16[h]=as.array(sum(gw_4.0_wy16[h,3:10])+sum(vz_4.0_wy16[h,3:10]))
+stor_tot_4.0_wy17[h]=as.array(sum(gw_4.0_wy17[h,3:10])+sum(vz_4.0_wy17[h,3:10]))
+stor_tot_4.0_wy18[h]=as.array(sum(gw_4.0_wy18[h,3:10])+sum(vz_4.0_wy18[h,3:10]))
+stor_tot_4.0_wy19[h]=as.array(sum(gw_4.0_wy19[h,3:10])+sum(vz_4.0_wy19[h,3:10]))
+stor_tot_4.0_wy20[h]=as.array(sum(gw_4.0_wy20[h,3:10])+sum(vz_4.0_wy20[h,3:10]))
+stor_tot_4.0_wy21[h]=as.array(sum(gw_4.0_wy21[h,3:10])+sum(vz_4.0_wy21[h,3:10]))
+#stor_tot_4.0_wy22[h]=as.array(sum(gw_4.0_wy22[h,3:10])+sum(vz_4.0_wy22[h,3:10]))
+}
+
+
+```
+
+```{r}
+#Read in discharge
+q_bl_wy15_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/discharge_subbasin1-8_bl_wy2015.corr.txt",header=FALSE,sep="\t")
+q_bl_wy16_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/discharge_subbasin1-8_bl_wy2016.corr.txt",header=FALSE,sep="\t")
+q_bl_wy17_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/discharge_subbasin1-8_bl_wy2017.corr.txt",header=FALSE,sep="\t")
+q_bl_wy18_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/discharge_subbasin1-8_bl_wy2018.corr.txt",header=FALSE,sep="\t")
+q_bl_wy19_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/discharge_subbasin1-8_bl_wy2019.corr.txt",header=FALSE,sep="\t")
+q_bl_wy20_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/discharge_subbasin1-8_bl_wy2020.corr.txt",header=FALSE,sep="\t")
+q_bl_wy21_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/discharge_subbasin1-8_bl_wy2021.corr.txt",header=FALSE,sep="\t")
+
+q_2.5_wy15_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/discharge_subbasin1-8_2.5_wy2015.corr.txt",header=FALSE,sep="\t")
+q_2.5_wy16_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/discharge_subbasin1-8_2.5_wy2016.corr.txt",header=FALSE,sep="\t")
+q_2.5_wy17_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/discharge_subbasin1-8_2.5_wy2017.corr.txt",header=FALSE,sep="\t")
+q_2.5_wy18_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/discharge_subbasin1-8_2.5_wy2018.corr.txt",header=FALSE,sep="\t")
+q_2.5_wy19_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/discharge_subbasin1-8_2.5_wy2019.corr.txt",header=FALSE,sep="\t")
+q_2.5_wy20_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/discharge_subbasin1-8_2.5_wy2020.corr.txt",header=FALSE,sep="\t")
+q_2.5_wy21_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/discharge_subbasin1-8_2.5_wy2021.corr.txt",header=FALSE,sep="\t")
+
+q_4.0_wy15_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/discharge_subbasin1-8_4.0_wy2015.corr.txt",header=FALSE,sep="\t")
+q_4.0_wy16_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/discharge_subbasin1-8_4.0_wy2016.corr.txt",header=FALSE,sep="\t")
+q_4.0_wy17_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/discharge_subbasin1-8_4.0_wy2017.corr.txt",header=FALSE,sep="\t")
+q_4.0_wy18_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/discharge_subbasin1-8_4.0_wy2018.corr.txt",header=FALSE,sep="\t")
+q_4.0_wy19_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/discharge_subbasin1-8_4.0_wy2019.corr.txt",header=FALSE,sep="\t")
+q_4.0_wy20_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/discharge_subbasin1-8_4.0_wy2020.corr.txt",header=FALSE,sep="\t")
+q_4.0_wy21_corr=read.csv("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/discharge_subbasin1-8_4.0_wy2021.corr.txt",header=FALSE,sep="\t")
+
+
+
+#Read in ET 
+for (yr in 15:21)  {
+  #BASELINE
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy20%2d.et_timeseries_ERonly_all.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  var_in=sprintf("et_bl_wy%2d",yr)
+  assign(var_in,file_in)
+
+  #2.5
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/2.5_wy20%2d.et_timeseries_ERonly_all.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  var_in=sprintf("et_2.5_wy%2d",yr)
+  assign(var_in,file_in)
+  
+  #4.0
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/4.0_wy20%2d.et_timeseries_ERonly_all.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  var_in=sprintf("et_4.0_wy%2d",yr)
+  assign(var_in,file_in)
+}
+
+ncells=sum(count_elev_bins[,3]) #8741
+area=ncells*100*100 # in m^2
+
+
+# ERW 12-11-23, changed this from format like:
+#wy15_bl=c((sum(all_year_precip_bl[1:8,1])/area*1000),sum(et_bl_wy15[1:8759,3]),all_year_cum_q_bl[7,1]/area*1000,(stor_tot_bl_wy15[8759]-stor_tot_bl_wy15[1])/area*1000)
+#Because 
+#1) et was watershed total (mm/s), need to *3600/NCELLS, not area, which cuts ET by over 60%!
+#2) change array for q
+
+wy15_bl=c((sum(all_year_precip_bl[1:8,1])/area*1000),sum(et_bl_wy15[1:8759,3])*3600/ncells,sum(q_bl_wy15_corr[1:8760,7])/area*1000,(stor_tot_bl_wy15[8759]-stor_tot_bl_wy15[1])/area*1000)
+wy16_bl=c((sum(all_year_precip_bl[1:8,2])/area*1000),sum(et_bl_wy16[1:8759,3])*3600/ncells,sum(q_bl_wy16_corr[1:8760,7])/area*1000,(stor_tot_bl_wy16[8759]-stor_tot_bl_wy16[1])/area*1000)
+wy17_bl=c((sum(all_year_precip_bl[1:8,3])/area*1000),sum(et_bl_wy17[1:8759,3])*3600/ncells,sum(q_bl_wy17_corr[1:8760,7])/area*1000,(stor_tot_bl_wy17[8759]-stor_tot_bl_wy17[1])/area*1000)
+wy18_bl=c((sum(all_year_precip_bl[1:8,4])/area*1000),sum(et_bl_wy18[1:8759,3])*3600/ncells,sum(q_bl_wy18_corr[1:8760,7])/area*1000,(stor_tot_bl_wy18[8759]-stor_tot_bl_wy18[1])/area*1000)
+wy19_bl=c((sum(all_year_precip_bl[1:8,5])/area*1000),sum(et_bl_wy19[1:8759,3])*3600/ncells,sum(q_bl_wy19_corr[1:8760,7])/area*1000,(stor_tot_bl_wy19[8759]-stor_tot_bl_wy19[1])/area*1000)
+wy20_bl=c((sum(all_year_precip_bl[1:8,6])/area*1000),sum(et_bl_wy20[1:8759,3])*3600/ncells,sum(q_bl_wy20_corr[1:8760,7])/area*1000,(stor_tot_bl_wy20[8759]-stor_tot_bl_wy20[1])/area*1000)
+wy21_bl=c((sum(all_year_precip_bl[1:8,7])/area*1000),sum(et_bl_wy21[1:8759,3])*3600/ncells,sum(q_bl_wy21_corr[1:8760,7])/area*1000,(stor_tot_bl_wy21[8759]-stor_tot_bl_wy21[1])/area*1000)
+#barplot(c(wy15_bl,wy16_bl,wy17_bl,wy18_bl,wy19_bl,wy20_bl,wy21_bl),col=c("black","olivedrab3","dodgerblue2","sandybrown"),beside=FALSE)
+
+wy15_2.5=c((sum(all_year_precip_bl[1:8,1])/area*1000),sum(et_2.5_wy15[1:8759,3])*3600/ncells,sum(q_2.5_wy15_corr[1:8760,7])/area*1000,(stor_tot_2.5_wy15[8759]-stor_tot_2.5_wy15[1])/area*1000)
+wy16_2.5=c((sum(all_year_precip_bl[1:8,2])/area*1000),sum(et_2.5_wy16[1:8759,3])*3600/ncells,sum(q_2.5_wy16_corr[1:8760,7])/area*1000,(stor_tot_2.5_wy16[8759]-stor_tot_2.5_wy16[1])/area*1000)
+wy17_2.5=c((sum(all_year_precip_bl[1:8,3])/area*1000),sum(et_2.5_wy17[1:8759,3])*3600/ncells,sum(q_2.5_wy17_corr[1:8760,7])/area*1000,(stor_tot_2.5_wy17[8759]-stor_tot_2.5_wy17[1])/area*1000)
+wy18_2.5=c((sum(all_year_precip_bl[1:8,4])/area*1000),sum(et_2.5_wy18[1:8759,3])*3600/ncells,sum(q_2.5_wy18_corr[1:8760,7])/area*1000,(stor_tot_2.5_wy18[8759]-stor_tot_2.5_wy18[1])/area*1000)
+wy19_2.5=c((sum(all_year_precip_bl[1:8,5])/area*1000),sum(et_2.5_wy19[1:8759,3])*3600/ncells,sum(q_2.5_wy19_corr[1:8760,7])/area*1000,(stor_tot_2.5_wy19[8759]-stor_tot_2.5_wy19[1])/area*1000)
+wy20_2.5=c((sum(all_year_precip_bl[1:8,6])/area*1000),sum(et_2.5_wy20[1:8759,3])*3600/ncells,sum(q_2.5_wy20_corr[1:8760,7])/area*1000,(stor_tot_2.5_wy20[8759]-stor_tot_2.5_wy20[1])/area*1000)
+wy21_2.5=c((sum(all_year_precip_bl[1:8,7])/area*1000),sum(et_2.5_wy21[1:8759,3])*3600/ncells,sum(q_2.5_wy21_corr[1:8760,7])/area*1000,(stor_tot_2.5_wy21[8759]-stor_tot_2.5_wy21[1])/area*1000)
+#barplot(c(wy15_2.5,wy16_2.5,wy17_2.5,wy18_2.5,wy19_2.5,wy20_2.5,wy21_2.5),col=c("black","olivedrab3","dodgerblue2","sandybrown"),beside=FALSE)
+
+wy15_4.0=c((sum(all_year_precip_bl[1:8,1])/area*1000),sum(et_4.0_wy15[1:8759,3])*3600/ncells,sum(q_4.0_wy15_corr[1:8760,7])/area*1000,(stor_tot_4.0_wy15[8759]-stor_tot_4.0_wy15[1])/area*1000)
+wy16_4.0=c((sum(all_year_precip_bl[1:8,2])/area*1000),sum(et_4.0_wy16[1:8759,3])*3600/ncells,sum(q_4.0_wy16_corr[1:8760,7])/area*1000,(stor_tot_4.0_wy16[8759]-stor_tot_4.0_wy16[1])/area*1000)
+wy17_4.0=c((sum(all_year_precip_bl[1:8,3])/area*1000),sum(et_4.0_wy17[1:8759,3])*3600/ncells,sum(q_4.0_wy17_corr[1:8760,7])/area*1000,(stor_tot_4.0_wy17[8759]-stor_tot_4.0_wy17[1])/area*1000)
+wy18_4.0=c((sum(all_year_precip_bl[1:8,4])/area*1000),sum(et_4.0_wy18[1:8759,3])*3600/ncells,sum(q_4.0_wy18_corr[1:8760,7])/area*1000,(stor_tot_4.0_wy18[8759]-stor_tot_4.0_wy18[1])/area*1000)
+wy19_4.0=c((sum(all_year_precip_bl[1:8,5])/area*1000),sum(et_4.0_wy19[1:8759,3])*3600/ncells,sum(q_4.0_wy19_corr[1:8760,7])/area*1000,(stor_tot_4.0_wy19[8759]-stor_tot_4.0_wy19[1])/area*1000)
+wy20_4.0=c((sum(all_year_precip_bl[1:8,6])/area*1000),sum(et_4.0_wy20[1:8759,3])*3600/ncells,sum(q_4.0_wy20_corr[1:8760,7])/area*1000,(stor_tot_4.0_wy20[8759]-stor_tot_4.0_wy20[1])/area*1000)
+wy21_4.0=c((sum(all_year_precip_bl[1:8,7])/area*1000),sum(et_4.0_wy21[1:8759,3])*3600/ncells,sum(q_4.0_wy21_corr[1:8760,7])/area*1000,(stor_tot_4.0_wy21[8759]-stor_tot_4.0_wy21[1])/area*1000)
+#barplot(c(wy15_4.0,wy16_4.0,wy17_4.0,wy18_4.0,wy19_4.0,wy20_4.0,wy21_4.0),col=c("black","olivedrab3","dodgerblue2","sandybrown"),beside=FALSE)
+
+
+#Try making stacked, if in dataframe creates space (Toggle beside=FALSE to get stacked)
+all_wy_bl=data.frame(wy15_bl,wy16_bl,wy17_bl,wy18_bl,wy19_bl,wy20_bl,wy21_bl)
+all_wy_2.5=data.frame(wy15_2.5,wy16_2.5,wy17_2.5,wy18_2.5,wy19_2.5,wy20_2.5,wy21_2.5)
+all_wy_4.0=data.frame(wy15_4.0,wy16_4.0,wy17_4.0,wy18_4.0,wy19_4.0,wy20_4.0,wy21_4.0)
+
+#par(mfrow=c(1,3))	
+barplot(as.matrix(all_wy_bl),col=c("black","olivedrab3","dodgerblue2","sandybrown"),beside=TRUE,ylim=c(-200,800))
+#barplot(as.matrix(all_wy_2.5),col=c("black","olivedrab3","dodgerblue2","sandybrown"),beside=TRUE,ylim=c(-200,800))
+#barplot(as.matrix(all_wy_4.0),col=c("black","olivedrab3","dodgerblue2","sandybrown"),beside=TRUE,ylim=c(-200,800))
+
+```
+```{r}
+#################################################### Fig 3 b,c ######################################################### 
+
+barplot(as.matrix(all_wy_2.5-all_wy_bl),col=c("black","olivedrab3","dodgerblue2","sandybrown"),beside=TRUE,ylim=c(-75,100),names.arg=c("WY15","WY16","WY17","WY18","WY19","WY20","WY21"),ylab="Height of Water Equivalent (mm)")
+barplot(as.matrix(all_wy_4.0-all_wy_bl),col=c("black","olivedrab3","dodgerblue2","sandybrown"),beside=TRUE,ylim=c(-75,100),names.arg=c("WY15","WY16","WY17","WY18","WY19","WY20","WY21"),ylab="Height of Water Equivalent (mm)")
+```
+
+
+```{r}
+#Pull some stats for the manuscript
+
+#What is the temporal average and stdev of precipitation across the 7 years?
+rowMeans(all_wy_bl)
+#649.01118 precip
+#132.43462 ET
+#502.26591 Q
+#-12.19763 dS
+
+```
+
+```{r}
+#Following RRC, March 2025, make Ternary Diagrams of RR, GSR, EI
+#TernaryPlot(alab="Q/R (-)",blab="ET/P (-)",clab="d(S)/P (-)")
+TernaryPlot(alab="Runoff Ratio (%)",blab="Evaporative Index (%)",clab="Groundwater Storage Ratio (%)")
+
+P_wy15=(sum(all_year_precip_bl[1:8,1])/area*1000)
+P_wy16=(sum(all_year_precip_bl[1:8,2])/area*1000)
+P_wy17=(sum(all_year_precip_bl[1:8,3])/area*1000)
+P_wy18=(sum(all_year_precip_bl[1:8,4])/area*1000)
+P_wy19=(sum(all_year_precip_bl[1:8,5])/area*1000)
+P_wy20=(sum(all_year_precip_bl[1:8,6])/area*1000)
+P_wy21=(sum(all_year_precip_bl[1:8,7])/area*1000)
+
+data_points <- list(
+  WY15 = c(((sum(q_bl_wy15_corr[1:8760,7])/area*1000)/(P_wy15)), ((sum(et_bl_wy15[1:8759,3])*3600/ncells)/(P_wy15)), (((stor_tot_bl_wy15[8759]-stor_tot_bl_wy15[1])/area*1000))/(P_wy15)), 
+  WY16 = c(((sum(q_bl_wy16_corr[1:8760,7])/area*1000)/(P_wy16)), ((sum(et_bl_wy16[1:8759,3])*3600/ncells)/(P_wy16)), (((stor_tot_bl_wy16[8759]-stor_tot_bl_wy16[1])/area*1000))/(P_wy16)),
+  WY17 = c(((sum(q_bl_wy17_corr[1:8760,7])/area*1000)/(P_wy17)), ((sum(et_bl_wy17[1:8759,3])*3600/ncells)/(P_wy17)), (((stor_tot_bl_wy17[8759]-stor_tot_bl_wy17[1])/area*1000))/(P_wy17)),
+  WY18 = c(((sum(q_bl_wy18_corr[1:8760,7])/area*1000)/(P_wy18)), ((sum(et_bl_wy18[1:8759,3])*3600/ncells)/(P_wy18)), (((stor_tot_bl_wy18[8759]-stor_tot_bl_wy18[1])/area*1000))/(P_wy18)),
+  WY19 = c(((sum(q_bl_wy19_corr[1:8760,7])/area*1000)/(P_wy19)), ((sum(et_bl_wy19[1:8759,3])*3600/ncells)/(P_wy19)), (((stor_tot_bl_wy19[8759]-stor_tot_bl_wy19[1])/area*1000))/(P_wy19)),
+  WY20 = c(((sum(q_bl_wy20_corr[1:8760,7])/area*1000)/(P_wy20)), ((sum(et_bl_wy20[1:8759,3])*3600/ncells)/(P_wy20)), (((stor_tot_bl_wy20[8759]-stor_tot_bl_wy20[1])/area*1000))/(P_wy20)),
+  WY21 = c(((sum(q_bl_wy21_corr[1:8760,7])/area*1000)/(P_wy21)), ((sum(et_bl_wy21[1:8759,3])*3600/ncells)/(P_wy21)), (((stor_tot_bl_wy21[8759]-stor_tot_bl_wy21[1])/area*1000))/(P_wy21))
+)
+
+data_points_2.5 <- list(
+  WY15 = c(((sum(q_2.5_wy15_corr[1:8760,7])/area*1000)/(P_wy15)), ((sum(et_2.5_wy15[1:8759,3])*3600/ncells)/(P_wy15)), (((stor_tot_2.5_wy15[8759]-stor_tot_2.5_wy15[1])/area*1000))/(P_wy15)), 
+  WY16 = c(((sum(q_2.5_wy16_corr[1:8760,7])/area*1000)/(P_wy16)), ((sum(et_2.5_wy16[1:8759,3])*3600/ncells)/(P_wy16)), (((stor_tot_2.5_wy16[8759]-stor_tot_2.5_wy16[1])/area*1000))/(P_wy16)),
+  WY17 = c(((sum(q_2.5_wy17_corr[1:8760,7])/area*1000)/(P_wy17)), ((sum(et_2.5_wy17[1:8759,3])*3600/ncells)/(P_wy17)), (((stor_tot_2.5_wy17[8759]-stor_tot_2.5_wy17[1])/area*1000))/(P_wy17)),
+  WY18 = c(((sum(q_2.5_wy18_corr[1:8760,7])/area*1000)/(P_wy18)), ((sum(et_2.5_wy18[1:8759,3])*3600/ncells)/(P_wy18)), (((stor_tot_2.5_wy18[8759]-stor_tot_2.5_wy18[1])/area*1000))/(P_wy18)),
+  WY19 = c(((sum(q_2.5_wy19_corr[1:8760,7])/area*1000)/(P_wy19)), ((sum(et_2.5_wy19[1:8759,3])*3600/ncells)/(P_wy19)), (((stor_tot_2.5_wy19[8759]-stor_tot_2.5_wy19[1])/area*1000))/(P_wy19)),
+  WY20 = c(((sum(q_2.5_wy20_corr[1:8760,7])/area*1000)/(P_wy20)), ((sum(et_2.5_wy20[1:8759,3])*3600/ncells)/(P_wy20)), (((stor_tot_2.5_wy20[8759]-stor_tot_2.5_wy20[1])/area*1000))/(P_wy20)),
+  WY21 = c(((sum(q_2.5_wy21_corr[1:8760,7])/area*1000)/(P_wy21)), ((sum(et_2.5_wy21[1:8759,3])*3600/ncells)/(P_wy21)), (((stor_tot_2.5_wy21[8759]-stor_tot_2.5_wy21[1])/area*1000))/(P_wy21))
+)
+
+data_points_4.0 <- list(
+  WY15 = c(((sum(q_4.0_wy15_corr[1:8760,7])/area*1000)/(P_wy15)), ((sum(et_4.0_wy15[1:8759,3])*3600/ncells)/(P_wy15)), (((stor_tot_4.0_wy15[8759]-stor_tot_4.0_wy15[1])/area*1000))/(P_wy15)), 
+  WY16 = c(((sum(q_4.0_wy16_corr[1:8760,7])/area*1000)/(P_wy16)), ((sum(et_4.0_wy16[1:8759,3])*3600/ncells)/(P_wy16)), (((stor_tot_4.0_wy16[8759]-stor_tot_4.0_wy16[1])/area*1000))/(P_wy16)),
+  WY17 = c(((sum(q_4.0_wy17_corr[1:8760,7])/area*1000)/(P_wy17)), ((sum(et_4.0_wy17[1:8759,3])*3600/ncells)/(P_wy17)), (((stor_tot_4.0_wy17[8759]-stor_tot_4.0_wy17[1])/area*1000))/(P_wy17)),
+  WY18 = c(((sum(q_4.0_wy18_corr[1:8760,7])/area*1000)/(P_wy18)), ((sum(et_4.0_wy18[1:8759,3])*3600/ncells)/(P_wy18)), (((stor_tot_4.0_wy18[8759]-stor_tot_4.0_wy18[1])/area*1000))/(P_wy18)),
+  WY19 = c(((sum(q_4.0_wy19_corr[1:8760,7])/area*1000)/(P_wy19)), ((sum(et_4.0_wy19[1:8759,3])*3600/ncells)/(P_wy19)), (((stor_tot_4.0_wy19[8759]-stor_tot_4.0_wy19[1])/area*1000))/(P_wy19)),
+  WY20 = c(((sum(q_4.0_wy20_corr[1:8760,7])/area*1000)/(P_wy20)), ((sum(et_4.0_wy20[1:8759,3])*3600/ncells)/(P_wy20)), (((stor_tot_4.0_wy20[8759]-stor_tot_4.0_wy20[1])/area*1000))/(P_wy20)),
+  WY21 = c(((sum(q_4.0_wy21_corr[1:8760,7])/area*1000)/(P_wy21)), ((sum(et_4.0_wy21[1:8759,3])*3600/ncells)/(P_wy21)), (((stor_tot_4.0_wy21[8759]-stor_tot_4.0_wy21[1])/area*1000))/(P_wy21))
+)
+
+AddToTernary(graphics::points, data_points, pch = 21, cex = 1.5, col="black")
+           #  bg = vapply(data_points, 
+           #              function (x) rgb(x[1], x[2], x[3], 128,
+           #                               maxColorValue = 255),
+           #              character(1))
+           #  )
+
+AddToTernary(graphics::points, data_points_2.5, pch = 21, cex = 1.5, col="orange")
+AddToTernary(graphics::points, data_points_4.0, pch = 21, cex = 1.5, col="red")
+
+```
+
+```{r}
+
+TernaryPlot(alab="Q/R (-)",blab="ET/P (-)",clab="d(S)/P (-)",xlim=c(.055,.3),ylim=c(.505,.75),padding=0.04)
+
+AddToTernary(graphics::points, data_points, pch = 21, cex = 1.5, col="gray")
+AddToTernary(graphics::points, data_points_2.5, pch = 21, cex = 1.5, col="orange")
+AddToTernary(graphics::points, data_points_4.0, pch = 21, cex = 1.5, col="red")
+
+AddToTernary(text, data_points, names(data_points), cex = 0.7, font = 2)
+#AddToTernary(text, data_points_2.5, names(data_points_2.5), cex = 0.5, font = 2)
+#AddToTernary(text, data_points_4.0, names(data_points_4.0), cex = 0.5, font = 2)
+
+TernaryArrows(data_points$WY15,data_points_4.0$WY15,cex=2)
+TernaryArrows(data_points$WY16,data_points_4.0$WY16)
+TernaryArrows(data_points$WY17,data_points_4.0$WY17)
+TernaryArrows(data_points$WY18,data_points_4.0$WY18)
+TernaryArrows(data_points$WY19,data_points_4.0$WY19)
+TernaryArrows(data_points$WY20,data_points_4.0$WY20)
+TernaryArrows(data_points$WY21,data_points_4.0$WY21)
+
+#AddToTernary(line, c(data_points$WY15,data_points_2.5$WY15), c(data_points$WY15,data_points_4.0$WY15))
+#AddToTernary(text, data_points, names(data_points), cex = 0.9, font = 2)
+#legend("bottomright", 
+#       legend = c("Red", "Orange", "Yellow", "Green"),
+#       cex = 0.8, bty = "n", pch = 21, pt.cex = 1.8,
+#       pt.bg = c(rgb(255,   0,   0, 128, NULL, 255), 
+#                 rgb(240, 180,  52, 128, NULL, 255),
+#                 rgb(210, 222, 102, 128, NULL, 255),
+#                 rgb(111, 222,  16, 128, NULL, 255)),
+#       )
+```
+
+```{r}
+#################################################### Fig 2 b ######################################################### 
+#Combine all 8 years, make into a data frame and draw regression line
+#Remove wy22
+df_stor_tot_bl=data.frame(c(stor_tot_bl_wy15,stor_tot_bl_wy16,stor_tot_bl_wy17,stor_tot_bl_wy18,stor_tot_bl_wy19,stor_tot_bl_wy20,stor_tot_bl_wy21))
+df_stor_tot_2.5=data.frame(c(stor_tot_2.5_wy15,stor_tot_2.5_wy16,stor_tot_2.5_wy17,stor_tot_2.5_wy18,stor_tot_2.5_wy19,stor_tot_2.5_wy20,stor_tot_2.5_wy21))
+df_stor_tot_4.0=data.frame(c(stor_tot_4.0_wy15,stor_tot_4.0_wy16,stor_tot_4.0_wy17,stor_tot_4.0_wy18,stor_tot_4.0_wy19,stor_tot_4.0_wy20,stor_tot_4.0_wy21))
+
+x=data.frame(1:61320)
+reg_line_stor_tot_bl=lm(df_stor_tot_bl[,1] ~ x[,1])
+reg_line_stor_tot_2.5=lm(df_stor_tot_2.5[,1] ~ x[,1])
+reg_line_stor_tot_4.0=lm(df_stor_tot_4.0[,1] ~ x[,1])
+
+
+#Remove scientific notation
+#options(scipen=999)
+#un-do? 
+#options(scipen=0)
+
+
+#Fig_out='Fig.gw+vz_wy15-22.regressionline.v2.pdf'
+#pdf(file=Fig_out)
+plot(df_stor_tot_bl[,1],col=rgb(red=0,green=0,blue=0,alpha=0.35),type="l",xlab=" ",ylab=expression("Groundwater Storage (m"^3*")"),ylim=c(5.5e8,5.71e8),xaxt = "n",cex.axis=1.25,cex.lab=1.25)
+#lines(df_stor_tot_2.5[,1],col=rgb(red=1,green=.64,blue=0,alpha=0.35))
+#lines(df_stor_tot_4.0[,1],col=rgb(red=1,green=0,blue=0,alpha=0.35))
+lines(df_stor_tot_2.5[,1],col="goldenrod")
+lines(df_stor_tot_4.0[,1],col="darkorange3")
+lines(predict(reg_line_stor_tot_bl),col="black")
+lines(predict(reg_line_stor_tot_2.5),col="goldenrod")
+lines(predict(reg_line_stor_tot_4.0),col="darkorange3")
+axis(1, at=0,labels="WY15",col.axis="black", las=0, cex.axis=1.1, tck=-.03)
+axis(1, at=8760,labels="WY16",col.axis="black", las=0, cex.axis=1.1, tck=-.03)
+axis(1, at=(8760*2),labels="WY17",col.axis="black", las=0, cex.axis=1.1, tck=-.03)
+axis(1, at=(8760*3),labels="WY18",col.axis="black", las=0, cex.axis=1.1, tck=-.03)
+axis(1, at=(8760*4),labels="WY19",col.axis="black", las=0, cex.axis=1.1, tck=-.03)
+axis(1, at=(8760*5),labels="WY20",col.axis="black", las=0, cex.axis=1.1, tck=-.03)
+axis(1, at=(8760*6),labels="WY21",col.axis="black", las=0, cex.axis=1.1, tck=-.03)
+axis(1, at=(8760*7),labels="WY22",col.axis="black", las=0, cex.axis=1.1, tck=-.03)
+
+
+```
+
+
+
+
+
+
+```{r}
+
+ ###############Calculate 1) daily q and 2) cumulative q, based on hours ###############
+nd=365
+nh=8760
+ny=7
+ns=8
+
+
+#DEFINE ARRAYS FOR EACH YEAR
+for (yr in 15:21)  {
+
+  #BASELINE, Declare and assign to variables
+  var_in2=sprintf("day_q_bl_wy%2d",yr)
+  var_in3=sprintf("cum_q_bl_wy%2d",yr)
+  temp_matrix2=matrix(0,nrow=nd,ncol=ns)
+  temp_matrix3=matrix(0,nrow=nh,ncol=ns)
+  assign(var_in2,temp_matrix2)
+  assign(var_in3,temp_matrix3)
+  
+  #2.5, Declare and assign to variables
+  var_in2=sprintf("day_q_2.5_wy%2d",yr)
+  var_in3=sprintf("cum_q_2.5_wy%2d",yr)
+  temp_matrix2=matrix(0,nrow=nd,ncol=ns)
+  temp_matrix3=matrix(0,nrow=nh,ncol=ns)
+  assign(var_in2,temp_matrix2)
+  assign(var_in3,temp_matrix3)
+  
+  #4.0, Declare and assign to variables
+  var_in2=sprintf("day_q_4.0_wy%2d",yr)
+  var_in3=sprintf("cum_q_4.0_wy%2d",yr)
+  temp_matrix2=matrix(0,nrow=nd,ncol=ns)
+  temp_matrix3=matrix(0,nrow=nh,ncol=ns)
+  assign(var_in2,temp_matrix2)
+  assign(var_in3,temp_matrix3)
+
+}
+
+
+for (yr in 15:21) {
+
+  #BASELINE
+  cum_temp=matrix(0,nrow=nh,ncol=ns)
+  #pass the year-specific q to temporary variables
+  q_name=sprintf("q_bl_wy%2d_corr",yr)
+  q=eval(as.name(paste(q_name)))
+
+  for (s in 1:ns) {
+    for (h in 2:nh) {
+      cum_temp[h,s]=cum_temp[h-1,s]+q[h,s]
+    }#hours
+  }#subbasin
+  #Pass back the yr-specific cumulative values back from temporary variables 
+  cum_name=sprintf("cum_q_bl_wy%2d",yr)
+  assign(cum_name,cum_temp)
+  
+  #2.5
+  cum_temp=matrix(0,nrow=nh,ncol=ns)
+  #pass the year-specific q to temporary variables
+  q_name=sprintf("q_2.5_wy%2d_corr",yr)
+  q=eval(as.name(paste(q_name)))
+  for (s in 1:ns) {
+    for (h in 2:nh) {
+      cum_temp[h,s]=cum_temp[h-1,s]+q[h,s]
+    }#hours
+  }#subbasin
+  #Pass back the yr-specific cumulative values back from temporary variables 
+  cum_name=sprintf("cum_q_2.5_wy%2d",yr)
+  assign(cum_name,cum_temp)
+  
+  #4.0
+  cum_temp=matrix(0,nrow=nh,ncol=ns)
+  #pass the year-specific q to temporary variables
+  q_name=sprintf("q_4.0_wy%2d_corr",yr)
+  q=eval(as.name(paste(q_name)))
+  for (s in 1:ns) {
+    for (h in 2:nh) {
+      cum_temp[h,s]=cum_temp[h-1,s]+q[h,s]
+    }#hours
+  }#subbasin
+  #Pass back the yr-specific cumulative values back from temporary variables 
+  cum_name=sprintf("cum_q_4.0_wy%2d",yr)
+  assign(cum_name,cum_temp)
+
+}#yrs
+
+
+all_year_cum_q_bl=cbind(cum_q_bl_wy15[8759,],cum_q_bl_wy16[8759,],cum_q_bl_wy17[8759,],cum_q_bl_wy18[8759,],cum_q_bl_wy19[8759,],cum_q_bl_wy20[8759,],cum_q_bl_wy21[8759,])
+all_year_cum_q_2.5=cbind(cum_q_2.5_wy15[8759,],cum_q_2.5_wy16[8759,],cum_q_2.5_wy17[8759,],cum_q_2.5_wy18[8759,],cum_q_2.5_wy19[8759,],cum_q_2.5_wy20[8759,],cum_q_2.5_wy21[8759,])
+all_year_cum_q_4.0=cbind(cum_q_4.0_wy15[8759,],cum_q_4.0_wy16[8759,],cum_q_4.0_wy17[8759,],cum_q_4.0_wy18[8759,],cum_q_4.0_wy19[8759,],cum_q_4.0_wy20[8759,],cum_q_4.0_wy21[8759,])
+
+wy_15_precip=(all_year_precip_bl[1,1]+all_year_precip_bl[2,1]+all_year_precip_bl[3,1]+all_year_precip_bl[4,1]+all_year_precip_bl[5,1]+all_year_precip_bl[6,1]+all_year_precip_bl[7,1]+all_year_precip_bl[8,1])
+wy_16_precip=(all_year_precip_bl[1,2]+all_year_precip_bl[2,2]+all_year_precip_bl[3,2]+all_year_precip_bl[4,2]+all_year_precip_bl[5,2]+all_year_precip_bl[6,2]+all_year_precip_bl[7,2]+all_year_precip_bl[8,2])
+wy_17_precip=(all_year_precip_bl[1,3]+all_year_precip_bl[2,3]+all_year_precip_bl[3,3]+all_year_precip_bl[4,3]+all_year_precip_bl[5,3]+all_year_precip_bl[6,3]+all_year_precip_bl[7,3]+all_year_precip_bl[8,3])
+wy_18_precip=(all_year_precip_bl[1,4]+all_year_precip_bl[2,4]+all_year_precip_bl[3,4]+all_year_precip_bl[4,4]+all_year_precip_bl[5,4]+all_year_precip_bl[6,4]+all_year_precip_bl[7,4]+all_year_precip_bl[8,4])
+wy_19_precip=(all_year_precip_bl[1,5]+all_year_precip_bl[2,5]+all_year_precip_bl[3,5]+all_year_precip_bl[4,5]+all_year_precip_bl[5,5]+all_year_precip_bl[6,5]+all_year_precip_bl[7,5]+all_year_precip_bl[8,5])
+wy_20_precip=(all_year_precip_bl[1,6]+all_year_precip_bl[2,6]+all_year_precip_bl[3,6]+all_year_precip_bl[4,6]+all_year_precip_bl[5,6]+all_year_precip_bl[6,6]+all_year_precip_bl[7,6]+all_year_precip_bl[8,6])
+wy_21_precip=(all_year_precip_bl[1,7]+all_year_precip_bl[2,7]+all_year_precip_bl[3,7]+all_year_precip_bl[4,7]+all_year_precip_bl[5,7]+all_year_precip_bl[6,7]+all_year_precip_bl[7,7]+all_year_precip_bl[8,7])
+
+################################ Fig 5b ################################ 
+
+plot(x=(stor_tot_bl_wy15[8759]-stor_tot_bl_wy15[1])/wy_15_precip,y=(all_year_cum_q_bl[7,1]/wy_15_precip),col="black",type="p",ylab="Runoff Ratio (-)",xlab="Groundwater Storage Ratio (-)",xlim=c(-.22,.07),pch=12,ylim=c(0.60,0.84),cex=wy_15_precip/40000000)
+lines(x=(stor_tot_bl_wy16[8759]-stor_tot_bl_wy16[1])/wy_16_precip,y=(all_year_cum_q_bl[7,2]/wy_16_precip),col="black",type="p",pch=6,cex=wy_16_precip/30000000)
+lines(x=(stor_tot_bl_wy17[8759]-stor_tot_bl_wy17[1])/wy_17_precip,y=(all_year_cum_q_bl[7,3]/wy_17_precip),col="black",type="p",pch=7,cex=wy_17_precip/30000000)
+lines(x=(stor_tot_bl_wy18[8759]-stor_tot_bl_wy18[1])/wy_18_precip,y=(all_year_cum_q_bl[7,4]/wy_18_precip),col="black",type="p",pch=13,cex=wy_18_precip/30000000)
+lines(x=(stor_tot_bl_wy19[8759]-stor_tot_bl_wy19[1])/wy_19_precip,y=(all_year_cum_q_bl[7,5]/wy_19_precip),col="black",type="p",pch=9,cex=wy_19_precip/30000000)
+lines(x=(stor_tot_bl_wy20[8759]-stor_tot_bl_wy20[1])/wy_20_precip,y=(all_year_cum_q_bl[7,6]/wy_20_precip),col="black",type="p",pch=10,cex=wy_20_precip/30000000)
+lines(x=(stor_tot_bl_wy21[8759]-stor_tot_bl_wy21[1])/wy_21_precip,y=(all_year_cum_q_bl[7,7]/wy_21_precip),col="black",type="p",pch=14,cex=wy_21_precip/30000000)
+
+lines(x=(stor_tot_2.5_wy15[8759]-stor_tot_2.5_wy15[1])/wy_15_precip,y=(all_year_cum_q_2.5[7,1]/wy_15_precip),col="orange",type="p",pch=12,cex=wy_15_precip/30000000)
+lines(x=(stor_tot_2.5_wy16[8759]-stor_tot_2.5_wy16[1])/wy_16_precip,y=(all_year_cum_q_2.5[7,2]/wy_16_precip),col="orange",type="p",pch=6,cex=wy_16_precip/30000000)
+lines(x=(stor_tot_2.5_wy17[8759]-stor_tot_2.5_wy17[1])/wy_17_precip,y=(all_year_cum_q_2.5[7,3]/wy_17_precip),col="orange",type="p",pch=7,cex=wy_17_precip/30000000)
+lines(x=(stor_tot_2.5_wy18[8759]-stor_tot_2.5_wy18[1])/wy_18_precip,y=(all_year_cum_q_2.5[7,4]/wy_18_precip),col="orange",type="p",pch=13,cex=wy_18_precip/30000000)
+lines(x=(stor_tot_2.5_wy19[8759]-stor_tot_2.5_wy19[1])/wy_19_precip,y=(all_year_cum_q_2.5[7,5]/wy_19_precip),col="orange",type="p",pch=9,cex=wy_19_precip/30000000)
+lines(x=(stor_tot_2.5_wy20[8759]-stor_tot_2.5_wy20[1])/wy_20_precip,y=(all_year_cum_q_2.5[7,6]/wy_20_precip),col="orange",type="p",pch=10,cex=wy_20_precip/30000000)
+lines(x=(stor_tot_2.5_wy21[8759]-stor_tot_2.5_wy21[1])/wy_21_precip,y=(all_year_cum_q_2.5[7,7]/wy_21_precip),col="orange",type="p",pch=14,cex=wy_21_precip/30000000)
+
+lines(x=(stor_tot_4.0_wy15[8759]-stor_tot_4.0_wy15[1])/wy_15_precip,y=(all_year_cum_q_4.0[7,1]/wy_15_precip),col="red",type="p",pch=12,cex=wy_15_precip/30000000)
+lines(x=(stor_tot_4.0_wy16[8759]-stor_tot_4.0_wy16[1])/wy_16_precip,y=(all_year_cum_q_4.0[7,2]/wy_16_precip),col="red",type="p",pch=6,cex=wy_16_precip/30000000)
+lines(x=(stor_tot_4.0_wy17[8759]-stor_tot_4.0_wy17[1])/wy_17_precip,y=(all_year_cum_q_4.0[7,3]/wy_17_precip),col="red",type="p",pch=7,cex=wy_17_precip/30000000)
+lines(x=(stor_tot_4.0_wy18[8759]-stor_tot_4.0_wy18[1])/wy_18_precip,y=(all_year_cum_q_4.0[7,4]/wy_18_precip),col="red",type="p",pch=13,cex=wy_18_precip/30000000)
+lines(x=(stor_tot_4.0_wy19[8759]-stor_tot_4.0_wy19[1])/wy_19_precip,y=(all_year_cum_q_4.0[7,5]/wy_19_precip),col="red",type="p",pch=9,cex=wy_19_precip/30000000)
+lines(x=(stor_tot_4.0_wy20[8759]-stor_tot_4.0_wy20[1])/wy_20_precip,y=(all_year_cum_q_4.0[7,6]/wy_20_precip),col="red",type="p",pch=10,cex=wy_20_precip/30000000)
+lines(x=(stor_tot_4.0_wy21[8759]-stor_tot_4.0_wy21[1])/wy_21_precip,y=(all_year_cum_q_4.0[7,7]/wy_21_precip),col="red",type="p",pch=14,cex=wy_21_precip/30000000)
+abline(v=0,col="black",lty=3)
+```
+
+```{r}
+################################ Fig 5a ################################ 
+#2-23-24 add to remove symbol differences
+plot(x=c(2015,2016,2017,2018,2019,2020,2021),y=(all_year_cum_q_bl[7,1:7]/(all_year_precip_bl[1,1:7]+all_year_precip_bl[2,1:7]+all_year_precip_bl[3,1:7]+all_year_precip_bl[4,1:7]+all_year_precip_bl[5,1:7]+all_year_precip_bl[6,1:7]+all_year_precip_bl[7,1:7]+all_year_precip_bl[8,1:7])),col="black",type="l",lty=3,pch=19,xlab=" ",ylab="Runoff Ratio (-)",cex=(all_year_precip_bl[1,1:7]+all_year_precip_bl[2,1:7]+all_year_precip_bl[3,1:7]+all_year_precip_bl[4,1:7]+all_year_precip_bl[5,1:7]+all_year_precip_bl[6,1:7]+all_year_precip_bl[7,1:7]+all_year_precip_bl[8,1:7])/50000000,ylim=c(0.59,0.83),cex.axis=0.9,xaxt='n')
+lines(x=c(2015,2016,2017,2018,2019,2020,2021),y=(all_year_cum_q_2.5[7,1:7]/(all_year_precip_bl[1,1:7]+all_year_precip_bl[2,1:7]+all_year_precip_bl[3,1:7]+all_year_precip_bl[4,1:7]+all_year_precip_bl[5,1:7]+all_year_precip_bl[6,1:7]+all_year_precip_bl[7,1:7]+all_year_precip_bl[8,1:7])),col="orange",type="l",lty=3,pch=19,cex=(all_year_precip_bl[1,1:7]+all_year_precip_bl[2,1:7]+all_year_precip_bl[3,1:7]+all_year_precip_bl[4,1:7]+all_year_precip_bl[5,1:7]+all_year_precip_bl[6,1:7]+all_year_precip_bl[7,1:7]+all_year_precip_bl[8,1:7])/50000000)
+lines(x=c(2015,2016,2017,2018,2019,2020,2021),y=(all_year_cum_q_4.0[7,1:7]/(all_year_precip_bl[1,1:7]+all_year_precip_bl[2,1:7]+all_year_precip_bl[3,1:7]+all_year_precip_bl[4,1:7]+all_year_precip_bl[5,1:7]+all_year_precip_bl[6,1:7]+all_year_precip_bl[7,1:7]+all_year_precip_bl[8,1:7])),col="red",type="l",lty=3,pch=19,cex=(all_year_precip_bl[1,1:7]+all_year_precip_bl[2,1:7]+all_year_precip_bl[3,1:7]+all_year_precip_bl[4,1:7]+all_year_precip_bl[5,1:7]+all_year_precip_bl[6,1:7]+all_year_precip_bl[7,1:7]+all_year_precip_bl[8,1:7])/50000000)
+axis(side=1, at = c(2015,2016,2017,2018,2019,2020,2021),labels=c("WY15","WY16","WY17","WY18","WY19","WY20","WY21"))
+
+#Add symbols to match 5b
+lines(x=2015,y=(all_year_cum_q_bl[7,1]/wy_15_precip),col="black",type="p",pch=12,cex=wy_15_precip/30000000)
+lines(x=2016,y=(all_year_cum_q_bl[7,2]/wy_16_precip),col="black",type="p",pch=6,cex=wy_16_precip/30000000)
+lines(x=2017,y=(all_year_cum_q_bl[7,3]/wy_17_precip),col="black",type="p",pch=7,cex=wy_17_precip/30000000)
+lines(x=2018,y=(all_year_cum_q_bl[7,4]/wy_18_precip),col="black",type="p",pch=13,cex=wy_18_precip/30000000)
+lines(x=2019,y=(all_year_cum_q_bl[7,5]/wy_19_precip),col="black",type="p",pch=9,cex=wy_19_precip/30000000)
+lines(x=2020,y=(all_year_cum_q_bl[7,6]/wy_20_precip),col="black",type="p",pch=10,cex=wy_20_precip/30000000)
+lines(x=2021,y=(all_year_cum_q_bl[7,7]/wy_21_precip),col="black",type="p",pch=14,cex=wy_21_precip/30000000)
+
+lines(x=2015,y=(all_year_cum_q_2.5[7,1]/wy_15_precip),col="orange",type="p",pch=12,cex=wy_15_precip/30000000)
+lines(x=2016,y=(all_year_cum_q_2.5[7,2]/wy_16_precip),col="orange",type="p",pch=6,cex=wy_16_precip/30000000)
+lines(x=2017,y=(all_year_cum_q_2.5[7,3]/wy_17_precip),col="orange",type="p",pch=7,cex=wy_17_precip/30000000)
+lines(x=2018,y=(all_year_cum_q_2.5[7,4]/wy_18_precip),col="orange",type="p",pch=13,cex=wy_18_precip/30000000)
+lines(x=2019,y=(all_year_cum_q_2.5[7,5]/wy_19_precip),col="orange",type="p",pch=9,cex=wy_19_precip/30000000)
+lines(x=2020,y=(all_year_cum_q_2.5[7,6]/wy_20_precip),col="orange",type="p",pch=10,cex=wy_20_precip/30000000)
+lines(x=2021,y=(all_year_cum_q_2.5[7,7]/wy_21_precip),col="orange",type="p",pch=14,cex=wy_21_precip/30000000)
+
+lines(x=2015,y=(all_year_cum_q_4.0[7,1]/wy_15_precip),col="red",type="p",pch=12,cex=wy_15_precip/30000000)
+lines(x=2016,y=(all_year_cum_q_4.0[7,2]/wy_16_precip),col="red",type="p",pch=6,cex=wy_16_precip/30000000)
+lines(x=2017,y=(all_year_cum_q_4.0[7,3]/wy_17_precip),col="red",type="p",pch=7,cex=wy_17_precip/30000000)
+lines(x=2018,y=(all_year_cum_q_4.0[7,4]/wy_18_precip),col="red",type="p",pch=13,cex=wy_18_precip/30000000)
+lines(x=2019,y=(all_year_cum_q_4.0[7,5]/wy_19_precip),col="red",type="p",pch=9,cex=wy_19_precip/30000000)
+lines(x=2020,y=(all_year_cum_q_4.0[7,6]/wy_20_precip),col="red",type="p",pch=10,cex=wy_20_precip/30000000)
+lines(x=2021,y=(all_year_cum_q_4.0[7,7]/wy_21_precip),col="red",type="p",pch=14,cex=wy_21_precip/30000000)
+```
+
+
+
+```{r}
+################################# Fig. 3 ################################
+```
+
+```{r}
+#Fig 3a, added during RRC2 Aug 2025
+
+swe_bl_15=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2015.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_bl_16=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2016.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_bl_17=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2017.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_bl_18=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2018.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_bl_19=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2019.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_bl_20=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2020.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_bl_21=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2021.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+
+swe_2.5_15=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/2.5_wy2015.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_2.5_16=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/2.5_wy2016.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_2.5_17=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/2.5_wy2017.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_2.5_18=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/2.5_wy2018.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_2.5_19=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/2.5_wy2019.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_2.5_20=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/2.5_wy2020.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_2.5_21=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/2.5_neon/2.5_wy2021.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+
+swe_4.0_15=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/4.0_wy2015.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_4.0_16=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/4.0_wy2016.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_4.0_17=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/4.0_wy2017.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_4.0_18=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/4.0_wy2018.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_4.0_19=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/4.0_wy2019.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_4.0_20=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/4.0_wy2020.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+swe_4.0_21=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/4.0_neon/4.0_wy2021.swe_timeseries_ERonly_all.txt",header=FALSE,sep=" ")
+
+plot(x=swe_bl_15[,2],y=swe_bl_15[,3]/8471,type="lines",ylab=" ",xlab=" ",xlim=c(0,8759*7),ylim=c(0,600),xaxt = "n",yaxt="n",xaxs = "i",yaxs="i",width = 2000, height = 600)
+par(lwd = 0.5) 
+lines(x=swe_2.5_15[,2],y=swe_2.5_15[,3]/8471,col="orange")
+lines(x=swe_4.0_15[,2],y=swe_4.0_15[,3]/8471,col="red")
+
+lines(x=swe_bl_16[,2]+8759,y=swe_bl_16[,3]/8471)
+lines(x=swe_bl_17[,2]+(8759*2)+24,y=swe_bl_17[,3]/8471)
+lines(x=swe_bl_18[,2]+(8759*3)+24,y=swe_bl_18[,3]/8471)
+lines(x=swe_bl_19[,2]+(8759*4)+24,y=swe_bl_19[,3]/8471)
+lines(x=swe_bl_20[,2]+(8759*5)+24,y=swe_bl_20[,3]/8471)
+lines(x=swe_bl_21[,2]+(8759*6)+48,y=swe_bl_21[,3]/8471)
+
+lines(x=swe_2.5_16[,2]+8759+24,y=swe_2.5_16[,3]/8471,col="orange")
+lines(x=swe_2.5_17[,2]+(8759*2)+24,y=swe_2.5_17[,3]/8471,col="orange")
+lines(x=swe_2.5_18[,2]+(8759*3)+24,y=swe_2.5_18[,3]/8471,col="orange")
+lines(x=swe_2.5_19[,2]+(8759*4)+24,y=swe_2.5_19[,3]/8471,col="orange")
+lines(x=swe_2.5_20[,2]+(8759*5)+24,y=swe_2.5_20[,3]/8471,col="orange")
+lines(x=swe_2.5_21[,2]+(8759*6)+48,y=swe_2.5_21[,3]/8471,col="orange")
+
+lines(x=swe_4.0_16[,2]+8759+24,y=swe_4.0_16[,3]/8471,col="red")
+lines(x=swe_4.0_17[,2]+(8759*2)+24,y=swe_4.0_17[,3]/8471,col="red")
+lines(x=swe_4.0_18[,2]+(8759*3)+24,y=swe_4.0_18[,3]/8471,col="red")
+lines(x=swe_4.0_19[,2]+(8759*4)+24,y=swe_4.0_19[,3]/8471,col="red")
+lines(x=swe_4.0_20[,2]+(8759*5)+24,y=swe_4.0_20[,3]/8471,col="red")
+lines(x=swe_4.0_21[,2]+(8759*6)+48,y=swe_4.0_21[,3]/8471,col="red")
+axis(1, at = c(0,8759, (8759*2)+24, (8759*3)+24, (8759*4)+24,(8759*5)+24,(8759*6)+48),labels = c(" ", " ", " ", " "," "," "," "))
+axis(2, at = c(0,200,400,600),labels = c(" ", " ", " ", " "))
+
+```
+
+
+
+
+```{r}
+#### CAREFUL TO RUN THIS CELL -- TAKES A LONG TIME TO RE-GENERATE!!! #############
+
+#Fig. 3b-c
+
+for (yr in 15:21) {
+  
+#Calculate Changes Each Day; Read in PFB for each hour
+for (d in 1:365) {
+    t_end=d*24
+    t_start=t_end-23
+    cat("Yr ",yr," Day #",d," h start and end: ",t_start, t_end,"\n")
+    if (d==365){
+      t_end=8759
+    }
+
+for (h in t_start:t_end) {
+#cat("Day #",d," h start and end: ",t_start, t_end, ". Hour is: ",h, "\n")
+  
+fin_bl=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/pressure_files/complete_set/bl_wy20%2d.out.press.%05d.pfb",yr,h) 	
+fin_2.5=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/pressure_files/complete_set/2.5_wy20%2d.out.press.%05d.pfb",yr,h) 	
+fin_4.0=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/pressure_files/complete_set/4.0_wy20%2d.out.press.%05d.pfb",yr,h) 	
+
+press_bl=readpfb(fin_bl,F)
+press_2.5=readpfb(fin_2.5,F)
+press_4.0=readpfb(fin_4.0,F)
+
+for (x in 1:150) {
+  for (y in 1:170) {
+    for (b in 1:nbins) {
+      if (bin_map[x,y]==b) {
+        avg_press365_bl[b,(yr-14),d]=avg_press365_bl[b,(yr-14),d]+press_bl[x,y,1]
+        avg_press365_2.5[b,(yr-14),d]=avg_press365_2.5[b,(yr-14),d]+press_2.5[x,y,1]
+        avg_press365_4.0[b,(yr-14),d]=avg_press365_4.0[b,(yr-14),d]+press_4.0[x,y,1]
+      }
+    }#nbins
+  }#ny
+}#nx
+}#End hours
+}#End days
+
+  #make average, not total change; account for daily sum in tally above
+  for (d in 1:365) {
+    for (b in 1:nbins) {
+      avg_press365_bl[b,(yr-14),d]=avg_press365_bl[b,(yr-14),d]/as.double(count_elev_bins[b,3])/24.0
+      avg_press365_2.5[b,(yr-14),d]=avg_press365_2.5[b,(yr-14),d]/as.double(count_elev_bins[b,3])/24.0
+      avg_press365_4.0[b,(yr-14),d]=avg_press365_4.0[b,(yr-14),d]/as.double(count_elev_bins[b,3])/24.0
+    }
+  }
+}#End years
+```
+
+
+
+```{r}
+#Fig 6 generated in EcoSLIM directory#
+```
+
+
+
+
+```{r}
+################################# Fig. A1b ################################
+PLM1_Obs_elev=2787.16
+PLM6_Obs_elev=2759.65
+
+#OBS WTD
+#individual wys
+PLM1_Obs_wy17=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM1_obs_wy17.txt",header=FALSE,sep="\t")
+PLM1_Obs_wy18=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM1_obs_wy18.txt",header=FALSE,sep="\t")
+PLM1_Obs_wy19=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM1_obs_wy19.txt",header=FALSE,sep="\t")
+PLM1_Obs_wy20=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM1_obs_wy20.txt",header=FALSE,sep="\t")
+PLM1_Obs_wy21=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM1_obs_wy21.txt",header=FALSE,sep="\t")
+PLM1_Obs_wy22=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM1_obs_wy22.txt",header=FALSE,sep="\t")
+
+PLM6_Obs_wy17=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM6_obs_wy17.txt",header=FALSE,sep="\t")
+PLM6_Obs_wy18=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM6_obs_wy18.txt",header=FALSE,sep="\t")
+PLM6_Obs_wy19=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM6_obs_wy19.txt",header=FALSE,sep="\t")
+PLM6_Obs_wy20=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM6_obs_wy20.txt",header=FALSE,sep="\t")
+PLM6_Obs_wy21=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM6_obs_wy21.txt",header=FALSE,sep="\t")
+PLM6_Obs_wy22=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/PLM_Wells/ess_dive_cd8c0b410d381c6_20230407T144654565253/ERW/PLM6_obs_wy22.txt",header=FALSE,sep="\t")
+
+
+#Column 3 is raw data; column 4 is smoothed from ESS-dive database (don't use)
+plot(x=PLM1_Obs_wy17[,1],y=PLM1_Obs_wy17[,3]-PLM1_Obs_elev,type="l",col="royalblue4",ylim=c(-5.1,0),xaxt = "n",ylab="WTD (mbls)",xlab=" ")
+lines(x=PLM1_Obs_wy18[,1],y=PLM1_Obs_wy18[,3]-PLM1_Obs_elev,type="l",col="royalblue2")
+lines(x=PLM1_Obs_wy19[,1],y=PLM1_Obs_wy19[,3]-PLM1_Obs_elev,type="l",col="steelblue1")
+lines(x=PLM1_Obs_wy20[,1],y=PLM1_Obs_wy20[,3]-PLM1_Obs_elev,type="l",col="navajowhite2")
+lines(x=PLM1_Obs_wy21[,1],y=PLM1_Obs_wy21[,3]-PLM1_Obs_elev,type="l",col="tan2")
+lines(x=PLM1_Obs_wy22[,1],y=PLM1_Obs_wy22[,3]-PLM1_Obs_elev,type="l",col="tan4")
+axis(1, at=0,labels="O",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=744/24,labels="N",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=1464/24,labels="D",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=2208/24,labels="J",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=2952/24,labels="F",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=3624/24,labels="M",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=4368/24,labels="A",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=5088/24,labels="M",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=5832/24,labels="J",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=6552/24,labels="J",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=7296/24,labels="A",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=8040/24,labels="S",col.axis="black", las=0, cex.axis=1, tck=-.03)
+axis(1, at=8760/24,labels="O",col.axis="black", las=0, cex.axis=1, tck=-.03)
+text(350,-0.1,"WY17",cex=.9,col="royalblue4")
+text(350,-.4,"WY18",cex=.9,col="royalblue2")
+text(350,-.7,"WY19",cex=.9,col="steelblue1")
+text(350,-1.0,"WY20",cex=.9,col="navajowhite2")
+text(350,-1.3,"WY21",cex=.9,col="tan2")
+text(350,-1.6,"WY22",cex=.9,col="tan4")
+
+```
+
+
+```{r}
+####################### Fig A3 b ####################### 
+  for (yr in 15:21)  {  
+    #2) "PRISMTMM HETERO DIURNAL" TEMPERATURE - cellbased (hetero) NLDAS temperature bias corrected by PRISM *MIN/MAX* Temperature
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_PRISMTMM_hetero_diurnal/bl_wy20%2d.discharge_subbasin1-8.corr_july24.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("q_bl_prismTMM_hetero_diurnal_wy%2d",yr)
+  assign(var_in,file_in)
+  
+  cat("Yr is ", yr, "\n")
+
+}
+
+
+for (yr in 15:21)  {
+  #4) "PRISM HETERO" cellbased conservation of prism, distributes daily amt over NLDAS 24 hours
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon_PRISM_hetero/bl_wy20%2d.discharge_subbasin1-8.corr_july24.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("q_bl_prism_hetero_wy%2d",yr)
+  assign(var_in,file_in)
+}
+
+
+for (yr in 15:21)  {    
+    #2) "PRISMTMM HETERO" TEMPERATURE - cellbased (hetero) NLDAS temperature bias corrected by PRISM MEAN Temperature
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_P_hetero.TMM_hetero_diurnal/bl_wy20%2d.discharge_subbasin1-8.corr_july24.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("q_bl_P_hetero.TMM_hetero_diurnal_wy%2d",yr)
+  assign(var_in,file_in)
+  
+    cat("Yr is ", yr, "\n")
+
+}
+
+
+
+# RE for forcing sensitivity analysis
+
+#First Q vs P
+
+#Read in PRISM PSR (Precip Snow Rain) - forcing sensitivity analysis
+for (yr in 15:21)  {
+  #USE "baseline_P_hetero.TMM_hetero_diurnal", same as:
+  #"PRISM_hetero"
+  
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/precip_analysis/precip_PRISM/annual_sums.precip_snowfall_rainfall.baseline_P_hetero.TMM_hetero_diurnal_wy%2d.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  var_in=sprintf("aPSR_bl_P_hetero.TMM_hetero_diurnal_wy%2d",yr)
+  assign(var_in,file_in)
+}
+
+#"AP" = annual P, converted to mm/y
+ap_bl_P_hetero.TMM_hetero_diurnal_allwy=matrix(0)
+ap_bl_P_hetero.TMM_hetero_diurnal_allwy[1]=aPSR_bl_P_hetero.TMM_hetero_diurnal_wy15[1,1]*3600/8471
+ap_bl_P_hetero.TMM_hetero_diurnal_allwy[2]=aPSR_bl_P_hetero.TMM_hetero_diurnal_wy16[1,1]*3600/8471
+ap_bl_P_hetero.TMM_hetero_diurnal_allwy[3]=aPSR_bl_P_hetero.TMM_hetero_diurnal_wy17[1,1]*3600/8471
+ap_bl_P_hetero.TMM_hetero_diurnal_allwy[4]=aPSR_bl_P_hetero.TMM_hetero_diurnal_wy18[1,1]*3600/8471
+ap_bl_P_hetero.TMM_hetero_diurnal_allwy[5]=aPSR_bl_P_hetero.TMM_hetero_diurnal_wy19[1,1]*3600/8471
+ap_bl_P_hetero.TMM_hetero_diurnal_allwy[6]=aPSR_bl_P_hetero.TMM_hetero_diurnal_wy20[1,1]*3600/8471
+ap_bl_P_hetero.TMM_hetero_diurnal_allwy[7]=aPSR_bl_P_hetero.TMM_hetero_diurnal_wy21[1,1]*3600/8471
+
+#"AQ" = annual Q
+aq_prism_hetero_allwy=matrix(0)
+aq_prism_hetero_allwy[1]=sum(q_bl_prism_hetero_wy15[1:8759,9])/Area_UER*1000
+aq_prism_hetero_allwy[2]=sum(q_bl_prism_hetero_wy16[1:8783,9])/Area_UER*1000
+aq_prism_hetero_allwy[3]=sum(q_bl_prism_hetero_wy17[1:8759,9])/Area_UER*1000
+aq_prism_hetero_allwy[4]=sum(q_bl_prism_hetero_wy18[1:8759,9])/Area_UER*1000
+aq_prism_hetero_allwy[5]=sum(q_bl_prism_hetero_wy19[1:8759,9])/Area_UER*1000
+aq_prism_hetero_allwy[6]=sum(q_bl_prism_hetero_wy20[1:8783,9])/Area_UER*1000
+aq_prism_hetero_allwy[7]=sum(q_bl_prism_hetero_wy21[1:8759,9])/Area_UER*1000
+
+aq_prismTMM_hetero_diurnal_allwy=matrix(0)
+aq_prismTMM_hetero_diurnal_allwy[1]=sum(q_bl_prismTMM_hetero_diurnal_wy15[1:8759,9])/Area_UER*1000
+aq_prismTMM_hetero_diurnal_allwy[2]=sum(q_bl_prismTMM_hetero_diurnal_wy16[1:8783,9])/Area_UER*1000
+aq_prismTMM_hetero_diurnal_allwy[3]=sum(q_bl_prismTMM_hetero_diurnal_wy17[1:8759,9])/Area_UER*1000
+aq_prismTMM_hetero_diurnal_allwy[4]=sum(q_bl_prismTMM_hetero_diurnal_wy18[1:8759,9])/Area_UER*1000
+aq_prismTMM_hetero_diurnal_allwy[5]=sum(q_bl_prismTMM_hetero_diurnal_wy19[1:8759,9])/Area_UER*1000
+aq_prismTMM_hetero_diurnal_allwy[6]=sum(q_bl_prismTMM_hetero_diurnal_wy20[1:8783,9])/Area_UER*1000
+aq_prismTMM_hetero_diurnal_allwy[7]=sum(q_bl_prismTMM_hetero_diurnal_wy21[1:8759,9])/Area_UER*1000
+
+aq_P_hetero.TMM_hetero_diurnal_allwy=matrix(0)
+aq_P_hetero.TMM_hetero_diurnal_allwy[1]=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy15[1:8759,9])/Area_UER*1000
+aq_P_hetero.TMM_hetero_diurnal_allwy[2]=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy16[1:8783,9])/Area_UER*1000
+aq_P_hetero.TMM_hetero_diurnal_allwy[3]=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy17[1:8759,9])/Area_UER*1000
+aq_P_hetero.TMM_hetero_diurnal_allwy[4]=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy18[1:8759,9])/Area_UER*1000
+aq_P_hetero.TMM_hetero_diurnal_allwy[5]=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy19[1:8759,9])/Area_UER*1000
+aq_P_hetero.TMM_hetero_diurnal_allwy[6]=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy20[1:8783,9])/Area_UER*1000
+aq_P_hetero.TMM_hetero_diurnal_allwy[7]=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy21[1:8759,9])/Area_UER*1000
+
+#Precip vs Q
+
+#1)prismTMM_hetero_diurnal_allwy and NLDAS have same P
+plot(y=((all_year_precip_bl[1,1:7]+all_year_precip_bl[2,1:7]+all_year_precip_bl[3,1:7]+all_year_precip_bl[4,1:7]+all_year_precip_bl[5,1:7]+all_year_precip_bl[6,1:7]+all_year_precip_bl[7,1:7]+all_year_precip_bl[8,1:7]))/Area_UER*1000, x=aq_prismTMM_hetero_diurnal_allwy,col="pink",ylab="Annual Precipitation (mm)",xlab="Annual Q (mm)",ylim=c(300,1500),xlim=c(300,1000))
+#2)NLDAS Q is different format
+points(y=((all_year_precip_bl[1,1:7]+all_year_precip_bl[2,1:7]+all_year_precip_bl[3,1:7]+all_year_precip_bl[4,1:7]+all_year_precip_bl[5,1:7]+all_year_precip_bl[6,1:7]+all_year_precip_bl[7,1:7]+all_year_precip_bl[8,1:7]))/Area_UER*1000,x=(all_year_cum_q_bl[7,1:7])/Area_UER*1000,col="black")
+#3)prism_hetero and 4)hetero.TMM_hetero_diurnal_hetero -- different P
+points(y=ap_bl_P_hetero.TMM_hetero_diurnal_allwy,x=aq_prism_hetero_allwy,col="red")
+points(y=ap_bl_P_hetero.TMM_hetero_diurnal_allwy,x=aq_P_hetero.TMM_hetero_diurnal_allwy,col="cyan")
+
+```
+```{r}
+
+######################### Fig A3 ##########################
+
+Area_UER=8471*100*100 # in m^2
+
+annual_q_obs_wy15=sum(discharge_obs[8760:17519,3])*3600/Area_UER*1000
+annual_q_obs_wy16=sum(discharge_obs[17520:26303,3])*3600/Area_UER*1000
+annual_q_obs_wy17=sum(discharge_obs[26304:35063,3])*3600/Area_UER*1000
+annual_q_obs_wy18=sum(discharge_obs[35064:43823,3])*3600/Area_UER*1000
+annual_q_obs_wy19=sum(discharge_obs[43824:52583,3])*3600/Area_UER*1000
+annual_q_obs_wy20=sum(discharge_obs[52584:61367,3])*3600/Area_UER*1000
+annual_q_obs_wy21=sum(discharge_obs[61368:70127,3])*3600/Area_UER*1000
+
+############ANNUAL-Precipitation Sensitivity Analysis##################################
+#NLDAS
+annual_q_bl_wy15=sum(q_bl_wy15_corr[1:8760,7])/Area_UER*1000
+annual_q_bl_wy16=sum(q_bl_wy16_corr[1:8760,7])/Area_UER*1000 #8783
+annual_q_bl_wy17=sum(q_bl_wy17_corr[1:8760,7])/Area_UER*1000
+annual_q_bl_wy18=sum(q_bl_wy18_corr[1:8760,7])/Area_UER*1000
+annual_q_bl_wy19=sum(q_bl_wy19_corr[1:8760,7])/Area_UER*1000
+annual_q_bl_wy20=sum(q_bl_wy20_corr[1:8760,7])/Area_UER*1000
+annual_q_bl_wy21=sum(q_bl_wy21_corr[1:8760,7])/Area_UER*1000
+
+annual_q_bl_prism_hetero_wy15=sum(q_bl_prism_hetero_wy15[1:8759,9])/Area_UER*1000
+annual_q_bl_prism_hetero_wy16=sum(q_bl_prism_hetero_wy16[1:8759,9])/Area_UER*1000 #8783
+annual_q_bl_prism_hetero_wy17=sum(q_bl_prism_hetero_wy17[1:8759,9])/Area_UER*1000
+annual_q_bl_prism_hetero_wy18=sum(q_bl_prism_hetero_wy18[1:8759,9])/Area_UER*1000
+annual_q_bl_prism_hetero_wy19=sum(q_bl_prism_hetero_wy19[1:8759,9])/Area_UER*1000
+annual_q_bl_prism_hetero_wy20=sum(q_bl_prism_hetero_wy20[1:8759,9])/Area_UER*1000 #8783
+annual_q_bl_prism_hetero_wy21=sum(q_bl_prism_hetero_wy21[1:8759,9])/Area_UER*1000
+
+annual_q_bl_P_hetero.TMM_hetero_diurnal_wy15=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy15[1:8759,9])/Area_UER*1000
+annual_q_bl_P_hetero.TMM_hetero_diurnal_wy16=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy16[1:8783,9])/Area_UER*1000
+annual_q_bl_P_hetero.TMM_hetero_diurnal_wy17=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy17[1:8759,9])/Area_UER*1000
+annual_q_bl_P_hetero.TMM_hetero_diurnal_wy18=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy18[1:8759,9])/Area_UER*1000
+annual_q_bl_P_hetero.TMM_hetero_diurnal_wy19=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy19[1:8759,9])/Area_UER*1000
+annual_q_bl_P_hetero.TMM_hetero_diurnal_wy20=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy20[1:8783,9])/Area_UER*1000
+annual_q_bl_P_hetero.TMM_hetero_diurnal_wy21=sum(q_bl_P_hetero.TMM_hetero_diurnal_wy21[1:8759,9])/Area_UER*1000
+
+annual_q_bl_prismTMM_hetero_diurnal_wy15=sum(q_bl_prismTMM_hetero_diurnal_wy15[1:8759,9])/Area_UER*1000
+annual_q_bl_prismTMM_hetero_diurnal_wy16=sum(q_bl_prismTMM_hetero_diurnal_wy16[1:8759,9])/Area_UER*1000
+annual_q_bl_prismTMM_hetero_diurnal_wy17=sum(q_bl_prismTMM_hetero_diurnal_wy17[1:8759,9])/Area_UER*1000
+annual_q_bl_prismTMM_hetero_diurnal_wy18=sum(q_bl_prismTMM_hetero_diurnal_wy18[1:8759,9])/Area_UER*1000
+annual_q_bl_prismTMM_hetero_diurnal_wy19=sum(q_bl_prismTMM_hetero_diurnal_wy19[1:8759,9])/Area_UER*1000
+annual_q_bl_prismTMM_hetero_diurnal_wy20=sum(q_bl_prismTMM_hetero_diurnal_wy20[1:8783,9])/Area_UER*1000
+annual_q_bl_prismTMM_hetero_diurnal_wy21=sum(q_bl_prismTMM_hetero_diurnal_wy21[1:8759,9])/Area_UER*1000
+
+
+plot(x=c(15,16,17,18,19,20,21),y=c(annual_q_bl_wy15,annual_q_bl_wy16,annual_q_bl_wy17,annual_q_bl_wy18,annual_q_bl_wy19,annual_q_bl_wy20,annual_q_bl_wy21),type="b",ylim=c(350,1100),xlab="Water Year",ylab="Annual Cumulative Q (mm/y)",col="black")
+lines(x=c(15,16,17,18,19,20,21),y=c(annual_q_bl_prism_hetero_wy15,annual_q_bl_prism_hetero_wy16,annual_q_bl_prism_hetero_wy17,annual_q_bl_prism_hetero_wy18,annual_q_bl_prism_hetero_wy19,annual_q_bl_prism_hetero_wy20,annual_q_bl_prism_hetero_wy21),type="b",col="red")
+lines(x=c(15,16,17,18,19,20,21),y=c(annual_q_obs_wy15,annual_q_obs_wy16,annual_q_obs_wy17,annual_q_obs_wy18,annual_q_obs_wy19,annual_q_obs_wy20,annual_q_obs_wy21),type="b",col="gray")
+lines(x=c(15,16,17,18,19,20,21),y=c(annual_q_bl_prismTMM_hetero_diurnal_wy15,annual_q_bl_prismTMM_hetero_diurnal_wy16,annual_q_bl_prismTMM_hetero_diurnal_wy17,annual_q_bl_prismTMM_hetero_diurnal_wy18,annual_q_bl_prismTMM_hetero_diurnal_wy19,annual_q_bl_prismTMM_hetero_diurnal_wy20,annual_q_bl_prismTMM_hetero_diurnal_wy21),type="b",col="pink")
+lines(x=c(15,16,17,18,19,20,21),y=c(annual_q_bl_P_hetero.TMM_hetero_diurnal_wy15,annual_q_bl_P_hetero.TMM_hetero_diurnal_wy16,annual_q_bl_P_hetero.TMM_hetero_diurnal_wy17,annual_q_bl_P_hetero.TMM_hetero_diurnal_wy18,annual_q_bl_P_hetero.TMM_hetero_diurnal_wy19,annual_q_bl_P_hetero.TMM_hetero_diurnal_wy20,annual_q_bl_P_hetero.TMM_hetero_diurnal_wy21),type="b",col="cyan")
+
+```
+
+```{r}
+
+for (yr in 15:21)  {
+  
+  #BASELINE - FORCING SENSITIVITY ANALYSIS
+  #1/3 PRISM_hetero
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon_PRISM_hetero/bl_wy20%2d.groundwater_volume_subbasins.txt",yr)
+  file_name2=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon_PRISM_hetero/bl_wy20%2d.vadosezone_volume_subbasins.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  file_in2=read.csv(file=file_name2,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("gw_bl_PRISM_hetero_wy%2d",yr)
+  var_in2=sprintf("vz_bl_PRISM_hetero_wy%2d",yr)
+  assign(var_in,file_in)
+  assign(var_in2,file_in2)
+
+    #2/3 PRISMTMM_hetero_diurnal
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_PRISMTMM_hetero_diurnal/bl_wy20%2d.groundwater_volume_subbasins.txt",yr)
+  file_name2=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_PRISMTMM_hetero_diurnal/bl_wy20%2d.vadosezone_volume_subbasins.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  file_in2=read.csv(file=file_name2,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("gw_bl_PRISMTMM_hetero_diurnal_wy%2d",yr)
+  var_in2=sprintf("vz_bl_PRISMTMM_hetero_diurnal_wy%2d",yr)
+  assign(var_in,file_in)
+  assign(var_in2,file_in2)
+
+    #3/3 P_hetero.TMM_hetero_diurnal
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_P_hetero.TMM_hetero_diurnal/bl_wy20%2d.groundwater_volume_subbasins.txt",yr)
+  file_name2=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_P_hetero.TMM_hetero_diurnal/bl_wy20%2d.vadosezone_volume_subbasins.txt",yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  file_in2=read.csv(file=file_name2,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("gw_bl_P_hetero.TMM_hetero_diurnal_wy%2d",yr)
+  var_in2=sprintf("vz_bl_P_hetero.TMM_hetero_diurnal_wy%2d",yr)
+  assign(var_in,file_in)
+  assign(var_in2,file_in2)
+  
+  cat("Yr is ", yr, "\n")
+}
+
+
+for (yr in 15:21)  {
+    var_in1=sprintf("stor_tot_bl_wy%2d",yr)
+    var_in1a=sprintf("stor_tot_bl_PRISM_hetero_wy%2d",yr)
+    var_in1b=sprintf("stor_tot_bl_PRISMTMM_hetero_diurnal_wy%2d",yr)
+    var_in1c=sprintf("stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy%2d",yr)
+    var_in2=sprintf("stor_tot_2.5_wy%2d",yr)
+    var_in3=sprintf("stor_tot_4.0_wy%2d",yr)
+    temp=array(0)
+    assign(var_in1,temp)
+    assign(var_in1a,temp)
+    assign(var_in1b,temp)
+    assign(var_in1c,temp)
+    assign(var_in2,temp)
+    assign(var_in3,temp)
+}
+
+for (h in 1:nh)  {
+
+stor_tot_bl_PRISM_hetero_wy15[h]=as.array(sum(gw_bl_PRISM_hetero_wy15[h,3:10])+sum(vz_bl_PRISM_hetero_wy15[h,3:10]))
+stor_tot_bl_PRISM_hetero_wy16[h]=as.array(sum(gw_bl_PRISM_hetero_wy16[h,3:10])+sum(vz_bl_PRISM_hetero_wy16[h,3:10]))
+stor_tot_bl_PRISM_hetero_wy17[h]=as.array(sum(gw_bl_PRISM_hetero_wy17[h,3:10])+sum(vz_bl_PRISM_hetero_wy17[h,3:10]))
+stor_tot_bl_PRISM_hetero_wy18[h]=as.array(sum(gw_bl_PRISM_hetero_wy18[h,3:10])+sum(vz_bl_PRISM_hetero_wy18[h,3:10]))
+stor_tot_bl_PRISM_hetero_wy19[h]=as.array(sum(gw_bl_PRISM_hetero_wy19[h,3:10])+sum(vz_bl_PRISM_hetero_wy19[h,3:10]))
+stor_tot_bl_PRISM_hetero_wy20[h]=as.array(sum(gw_bl_PRISM_hetero_wy20[h,3:10])+sum(vz_bl_PRISM_hetero_wy20[h,3:10]))
+stor_tot_bl_PRISM_hetero_wy21[h]=as.array(sum(gw_bl_PRISM_hetero_wy21[h,3:10])+sum(vz_bl_PRISM_hetero_wy21[h,3:10]))
+
+stor_tot_bl_PRISMTMM_hetero_diurnal_wy15[h]=as.array(sum(gw_bl_PRISMTMM_hetero_diurnal_wy15[h,3:10])+sum(vz_bl_PRISMTMM_hetero_diurnal_wy15[h,3:10]))
+stor_tot_bl_PRISMTMM_hetero_diurnal_wy16[h]=as.array(sum(gw_bl_PRISMTMM_hetero_diurnal_wy16[h,3:10])+sum(vz_bl_PRISMTMM_hetero_diurnal_wy16[h,3:10]))
+stor_tot_bl_PRISMTMM_hetero_diurnal_wy17[h]=as.array(sum(gw_bl_PRISMTMM_hetero_diurnal_wy17[h,3:10])+sum(vz_bl_PRISMTMM_hetero_diurnal_wy17[h,3:10]))
+stor_tot_bl_PRISMTMM_hetero_diurnal_wy18[h]=as.array(sum(gw_bl_PRISMTMM_hetero_diurnal_wy18[h,3:10])+sum(vz_bl_PRISMTMM_hetero_diurnal_wy18[h,3:10]))
+stor_tot_bl_PRISMTMM_hetero_diurnal_wy19[h]=as.array(sum(gw_bl_PRISMTMM_hetero_diurnal_wy19[h,3:10])+sum(vz_bl_PRISMTMM_hetero_diurnal_wy19[h,3:10]))
+stor_tot_bl_PRISMTMM_hetero_diurnal_wy20[h]=as.array(sum(gw_bl_PRISMTMM_hetero_diurnal_wy20[h,3:10])+sum(vz_bl_PRISMTMM_hetero_diurnal_wy20[h,3:10]))
+stor_tot_bl_PRISMTMM_hetero_diurnal_wy21[h]=as.array(sum(gw_bl_PRISMTMM_hetero_diurnal_wy21[h,3:10])+sum(vz_bl_PRISMTMM_hetero_diurnal_wy21[h,3:10]))
+
+stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy15[h]=as.array(sum(gw_bl_P_hetero.TMM_hetero_diurnal_wy15[h,3:10])+sum(vz_bl_P_hetero.TMM_hetero_diurnal_wy15[h,3:10]))
+stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy16[h]=as.array(sum(gw_bl_P_hetero.TMM_hetero_diurnal_wy16[h,3:10])+sum(vz_bl_P_hetero.TMM_hetero_diurnal_wy16[h,3:10]))
+stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy17[h]=as.array(sum(gw_bl_P_hetero.TMM_hetero_diurnal_wy17[h,3:10])+sum(vz_bl_P_hetero.TMM_hetero_diurnal_wy17[h,3:10]))
+stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy18[h]=as.array(sum(gw_bl_P_hetero.TMM_hetero_diurnal_wy18[h,3:10])+sum(vz_bl_P_hetero.TMM_hetero_diurnal_wy18[h,3:10]))
+stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy19[h]=as.array(sum(gw_bl_P_hetero.TMM_hetero_diurnal_wy19[h,3:10])+sum(vz_bl_P_hetero.TMM_hetero_diurnal_wy19[h,3:10]))
+stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy20[h]=as.array(sum(gw_bl_P_hetero.TMM_hetero_diurnal_wy20[h,3:10])+sum(vz_bl_P_hetero.TMM_hetero_diurnal_wy20[h,3:10]))
+stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy21[h]=as.array(sum(gw_bl_P_hetero.TMM_hetero_diurnal_wy21[h,3:10])+sum(vz_bl_P_hetero.TMM_hetero_diurnal_wy21[h,3:10]))
+
+}
+
+
+
+
+
+
+
+
+
+
+all_year_stor_y_end_bl_PRISM_hetero=cbind(stor_tot_bl_PRISM_hetero_wy15[8759],stor_tot_bl_PRISM_hetero_wy16[8759],stor_tot_bl_PRISM_hetero_wy17[8759],stor_tot_bl_PRISM_hetero_wy18[8759],stor_tot_bl_PRISM_hetero_wy19[8759],stor_tot_bl_PRISM_hetero_wy20[8759],stor_tot_bl_PRISM_hetero_wy21[8759])
+
+all_year_stor_y_end_bl_PRISMTMM_hetero_diurnal=cbind(stor_tot_bl_PRISMTMM_hetero_diurnal_wy15[8759],stor_tot_bl_PRISMTMM_hetero_diurnal_wy16[8759],stor_tot_bl_PRISMTMM_hetero_diurnal_wy17[8759],stor_tot_bl_PRISMTMM_hetero_diurnal_wy18[8759],stor_tot_bl_PRISMTMM_hetero_diurnal_wy19[8759],stor_tot_bl_PRISMTMM_hetero_diurnal_wy20[8759],stor_tot_bl_PRISMTMM_hetero_diurnal_wy21[8759])
+
+all_year_stor_y_end_bl_P_hetero.TMM_hetero_diurnal=cbind(stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy15[8759],stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy16[8759],stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy17[8759],stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy18[8759],stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy19[8759],stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy20[8759],stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy21[8759])
+
+
+
+#These are RE in m^3/m^3
+plot(x=(stor_tot_bl_wy15[8759]-stor_tot_bl_wy15[1])/wy_15_precip,y=(all_year_cum_q_bl[7,1]/wy_15_precip),col="black",type="p",ylab="Runoff Ratio (-)",xlab="Groundwater Storage Ratio (-)",xlim=c(-.19,.09),pch=12,ylim=c(0.65,.83))
+lines(x=(stor_tot_bl_wy16[8759]-stor_tot_bl_wy16[1])/wy_16_precip,y=(all_year_cum_q_bl[7,2]/wy_16_precip),col="black",type="p",pch=6)
+lines(x=(stor_tot_bl_wy17[8759]-stor_tot_bl_wy17[1])/wy_17_precip,y=(all_year_cum_q_bl[7,3]/wy_17_precip),col="black",type="p",pch=7)
+lines(x=(stor_tot_bl_wy18[8759]-stor_tot_bl_wy18[1])/wy_18_precip,y=(all_year_cum_q_bl[7,4]/wy_18_precip),col="black",type="p",pch=13)
+lines(x=(stor_tot_bl_wy19[8759]-stor_tot_bl_wy19[1])/wy_19_precip,y=(all_year_cum_q_bl[7,5]/wy_19_precip),col="black",type="p",pch=9)
+lines(x=(stor_tot_bl_wy20[8759]-stor_tot_bl_wy20[1])/wy_20_precip,y=(all_year_cum_q_bl[7,6]/wy_20_precip),col="black",type="p",pch=10)
+lines(x=(stor_tot_bl_wy21[8759]-stor_tot_bl_wy21[1])/wy_21_precip,y=(all_year_cum_q_bl[7,7]/wy_21_precip),col="black",type="p",pch=14)
+
+### 1/3 PRISM_hetero
+#PRISM_hetero has same P as P_hetero.TMM_hetero_diurnal
+lines(y=aq_prism_hetero_allwy[1]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[1],x=(stor_tot_bl_PRISM_hetero_wy15[8759]-stor_tot_bl_PRISM_hetero_wy15[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[1],col="red",type="p")
+lines(y=aq_prism_hetero_allwy[2]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[2],x=(stor_tot_bl_PRISM_hetero_wy16[8759]-stor_tot_bl_PRISM_hetero_wy16[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[2],col="red",type="p",pch=6)
+lines(y=aq_prism_hetero_allwy[3]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[3],x=(stor_tot_bl_PRISM_hetero_wy17[8759]-stor_tot_bl_PRISM_hetero_wy17[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[3],col="red",type="p",pch=7)
+lines(y=aq_prism_hetero_allwy[4]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[4],x=(stor_tot_bl_PRISM_hetero_wy18[8759]-stor_tot_bl_PRISM_hetero_wy18[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[4],col="red",type="p",pch=13)
+lines(y=aq_prism_hetero_allwy[5]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[5],x=(stor_tot_bl_PRISM_hetero_wy19[8759]-stor_tot_bl_PRISM_hetero_wy19[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[5],col="red",type="p",pch=9)
+lines(y=aq_prism_hetero_allwy[6]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[6],x=(stor_tot_bl_PRISM_hetero_wy20[8759]-stor_tot_bl_PRISM_hetero_wy20[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[6],col="red",type="p",pch=10)
+lines(y=aq_prism_hetero_allwy[7]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[7],x=(stor_tot_bl_PRISM_hetero_wy21[8759]-stor_tot_bl_PRISM_hetero_wy21[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[7],col="red",type="p",pch=14)
+
+### 2/3 PRISMTMM_hetero_diurnal
+#PRISM_hetero has same P as NLDAS, keep in m^3
+lines(y=aq_prismTMM_hetero_diurnal_allwy[1]/(wy_15_precip/Area_UER*1000),x=(stor_tot_bl_PRISMTMM_hetero_diurnal_wy15[8759]-stor_tot_bl_PRISMTMM_hetero_diurnal_wy15[1])/wy_15_precip,col="pink",type="p")
+lines(y=aq_prismTMM_hetero_diurnal_allwy[2]/(wy_16_precip/Area_UER*1000),x=(stor_tot_bl_PRISMTMM_hetero_diurnal_wy16[8759]-stor_tot_bl_PRISMTMM_hetero_diurnal_wy16[1])/wy_16_precip,col="pink",type="p",pch=6)
+lines(y=aq_prismTMM_hetero_diurnal_allwy[3]/(wy_17_precip/Area_UER*1000),x=(stor_tot_bl_PRISMTMM_hetero_diurnal_wy17[8759]-stor_tot_bl_PRISMTMM_hetero_diurnal_wy17[1])/wy_17_precip,col="pink",type="p",pch=7)
+lines(y=aq_prismTMM_hetero_diurnal_allwy[4]/(wy_18_precip/Area_UER*1000),x=(stor_tot_bl_PRISMTMM_hetero_diurnal_wy18[8759]-stor_tot_bl_PRISMTMM_hetero_diurnal_wy18[1])/wy_18_precip,col="pink",type="p",pch=13)
+lines(y=aq_prismTMM_hetero_diurnal_allwy[5]/(wy_19_precip/Area_UER*1000),x=(stor_tot_bl_PRISMTMM_hetero_diurnal_wy19[8759]-stor_tot_bl_PRISMTMM_hetero_diurnal_wy19[1])/wy_19_precip,col="pink",type="p",pch=9)
+lines(y=aq_prismTMM_hetero_diurnal_allwy[6]/(wy_20_precip/Area_UER*1000),x=(stor_tot_bl_PRISMTMM_hetero_diurnal_wy20[8759]-stor_tot_bl_PRISMTMM_hetero_diurnal_wy20[1])/wy_20_precip,col="pink",type="p",pch=10)
+lines(y=aq_prismTMM_hetero_diurnal_allwy[7]/(wy_21_precip/Area_UER*1000),x=(stor_tot_bl_PRISMTMM_hetero_diurnal_wy21[8759]-stor_tot_bl_PRISMTMM_hetero_diurnal_wy21[1])/wy_21_precip,col="pink",type="p",pch=14)
+
+### 3/3 P_hetero.TMM_hetero_diurnal
+#P_hetero.TMM_hetero_diurnal
+lines(y=aq_P_hetero.TMM_hetero_diurnal_allwy[1]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[1],x=(stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy15[8759]-stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy15[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[1],col="cyan",type="p")
+lines(y=aq_P_hetero.TMM_hetero_diurnal_allwy[2]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[2],x=(stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy16[8759]-stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy16[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[2],col="cyan",type="p",pch=6)
+lines(y=aq_P_hetero.TMM_hetero_diurnal_allwy[3]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[3],x=(stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy17[8759]-stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy17[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[3],col="cyan",type="p",pch=7)
+lines(y=aq_P_hetero.TMM_hetero_diurnal_allwy[4]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[4],x=(stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy18[8759]-stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy18[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[4],col="cyan",type="p",pch=13)
+lines(y=aq_P_hetero.TMM_hetero_diurnal_allwy[5]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[5],x=(stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy19[8759]-stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy19[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[5],col="cyan",type="p",pch=9)
+lines(y=aq_P_hetero.TMM_hetero_diurnal_allwy[6]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[6],x=(stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy20[8759]-stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy20[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[6],col="cyan",type="p",pch=10)
+lines(y=aq_P_hetero.TMM_hetero_diurnal_allwy[7]/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[7],x=(stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy21[8759]-stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy21[1])/Area_UER*1000/ap_bl_P_hetero.TMM_hetero_diurnal_allwy[7],col="cyan",type="p",pch=14)
+
+abline(v=0,col="black",lty=3)
+```
+
+
+```{r}
+
+############################## Fig A4a ############################## 
+
+
+#1)prismTMM_hetero_diurnal_allwy and NLDAS have same P
+plot(aq_prismTMM_hetero_diurnal_allwy/(((all_year_precip_bl[1,1:7]+all_year_precip_bl[2,1:7]+all_year_precip_bl[3,1:7]+all_year_precip_bl[4,1:7]+all_year_precip_bl[5,1:7]+all_year_precip_bl[6,1:7]+all_year_precip_bl[7,1:7]+all_year_precip_bl[8,1:7]))/Area_UER*1000),col="pink",ylab="Runoff Ratio (-)",xlab="Water Year",type="l",ylim=c(0.66,0.86),xaxt="n")
+#2)NLDAS Q is different format
+lines(((all_year_cum_q_bl[7,1:7])/Area_UER*1000)/(((all_year_precip_bl[1,1:7]+all_year_precip_bl[2,1:7]+all_year_precip_bl[3,1:7]+all_year_precip_bl[4,1:7]+all_year_precip_bl[5,1:7]+all_year_precip_bl[6,1:7]+all_year_precip_bl[7,1:7]+all_year_precip_bl[8,1:7]))/Area_UER*1000),col="black")
+#3)prism_hetero and 4)hetero.TMM_hetero_diurnal_hetero -- different P
+lines(aq_prism_hetero_allwy/ap_bl_P_hetero.TMM_hetero_diurnal_allwy,col="red")
+lines(aq_P_hetero.TMM_hetero_diurnal_allwy/ap_bl_P_hetero.TMM_hetero_diurnal_allwy,col="cyan")
+
+intervals=c(1,2,3,4,5,6,7,8)
+axis(1, at = intervals,labels = c("WY15","WY16","WY17","WY18","WY19","WY20","WY21","WY22"),tick=TRUE,tck = -0.02)
+
+```
+```{r}
+#July 2025 RRC2
+
+df_stor_tot_bl_PRISM_hetero=data.frame(c(stor_tot_bl_PRISM_hetero_wy15,stor_tot_bl_PRISM_hetero_wy16,stor_tot_bl_PRISM_hetero_wy17,stor_tot_bl_PRISM_hetero_wy18,stor_tot_bl_PRISM_hetero_wy19,stor_tot_bl_PRISM_hetero_wy20,stor_tot_bl_PRISM_hetero_wy21))
+
+df_stor_tot_bl_P_hetero.TMM_hetero_diurnal=data.frame(c(stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy15,stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy16,stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy17,stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy18,stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy19,stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy20,stor_tot_bl_P_hetero.TMM_hetero_diurnal_wy21))
+
+df_stor_tot_bl_PRISMTMM_hetero_diurnal=data.frame(c(stor_tot_bl_PRISMTMM_hetero_diurnal_wy15,stor_tot_bl_PRISMTMM_hetero_diurnal_wy16,stor_tot_bl_PRISMTMM_hetero_diurnal_wy17,stor_tot_bl_PRISMTMM_hetero_diurnal_wy18,stor_tot_bl_PRISMTMM_hetero_diurnal_wy19,stor_tot_bl_PRISMTMM_hetero_diurnal_wy20,stor_tot_bl_PRISMTMM_hetero_diurnal_wy21))
+
+x=data.frame(1:61320)
+reg_line_stor_tot_bl_PRISM_hetero=lm(df_stor_tot_bl_PRISM_hetero[,1] ~ x[,1])
+reg_line_stor_tot_bl_P_hetero.TMM_hetero_diurnal=lm(df_stor_tot_bl_P_hetero.TMM_hetero_diurnal[,1] ~ x[,1])
+reg_line_stor_tot_bl_PRISMTMM_hetero_diurnal=lm(df_stor_tot_bl_PRISMTMM_hetero_diurnal[,1] ~ x[,1])
+
+plot(x=1:61320,y=df_stor_tot_bl[,1],col="black",ylim=c(5.5e8,5.75e8))
+points(x=1:61320,y=df_stor_tot_bl_PRISM_hetero[,1],col="red",cex=0.5)
+points(x=1:61320,y=df_stor_tot_bl_P_hetero.TMM_hetero_diurnal[,1],col="cyan",cex=0.5)
+points(x=1:61320,y=df_stor_tot_bl_PRISMTMM_hetero_diurnal[,1],col="pink",cex=0.5)
+
+lines(predict(reg_line_stor_tot_bl),col="black")
+lines(predict(reg_line_stor_tot_bl_PRISM_hetero),col="red")
+lines(predict(reg_line_stor_tot_bl_P_hetero.TMM_hetero_diurnal),col="cyan")
+lines(predict(reg_line_stor_tot_bl_PRISMTMM_hetero_diurnal),col="pink")
+
+#slopes
+summary(reg_line_stor_tot_bl)
+summary(reg_line_stor_tot_bl_PRISM_hetero)
+summary(reg_line_stor_tot_bl_P_hetero.TMM_hetero_diurnal)
+summary(reg_line_stor_tot_bl_PRISMTMM_hetero_diurnal)
+```
+
+
+```{r}
+#################################### FIG A5. ############################################## 
+# SNOTEL  #
+
+#Download  Snotel Data from API
+library(snotelr)
+butte=snotel_download(site_id=c(380), network = "sntl", path = "/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/SNOTEL/Butte", internal = TRUE)
+schofield=snotel_download(site_id=c(737), network = "sntl", path = "/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/SNOTEL/Schofield", internal = TRUE)
+
+#Download Snotel Phenology from API
+#offset is to get to start of WY (92 days between Jan 1 and Oct 1 previous year)
+butte_stats=snotel_phenology(butte, threshold = 0, offset = -92)
+schofield_stats=snotel_phenology(schofield, threshold = 0, offset = -92)
+
+#Downselect phenology data over 8 calendar years for the 7 wys simulated
+butte_stats[35:42,]
+schofield_stats[30:37,]
+
+mean(butte_stats[35:42,]$max_swe)
+sd(butte_stats[35:42,]$max_swe)
+mean(schofield_stats[30:37,]$max_swe)
+sd(schofield_stats[30:37,]$max_swe)
+
+
+
+#For manuscript Intoduction text, note the PLM observation period mean and sd of snotel wy17-22
+butte_stats[37:42,]
+schofield_stats[32:37,]
+
+mean(butte_stats[37:42,]$max_swe)
+sd(butte_stats[37:42,]$max_swe)
+mean(schofield_stats[32:37,]$max_swe)
+sd(schofield_stats[32:37,]$max_swe)
+```
+
+
+```{r}
+#List ASO DATES
+ASO_dates=(c("2016-04-04","2018-03-31","2018-05-24","2019-04-07","2019-06-10"))
+ASO_dates_df=as.Date(ASO_dates)
+```
+
+
+```{r}
+
+library(lubridate)
+
+butte$date2=as.Date(butte[,12],format="%Y-%m-%d")
+
+butte_wy15_22=butte %>%subset((date2>"2014-09-30")&(date2<"2021-10-01"))
+#butte_wy15_22_aso=butte %>%subset(date2==ASO_dates_df) #Didn't work, add manually instead
+butte_wy15_22_aso=butte %>%subset(date2=="2016-04-04"|date2=="2018-03-31"|date2=="2018-05-24"|date2=="2019-04-07"|date2=="2019-06-10")
+
+
+schofield$date2=as.Date(schofield[,12],format="%Y-%m-%d")
+
+schofield_wy15_22=schofield %>%subset((date2>"2014-09-30")&(date2<"2021-10-01"))
+#schofield_wy15_22_aso=schofield %>%subset(date2==ASO_dates_df) #Didn't work, add manually instead
+schofield_wy15_22_aso=schofield %>%subset(date2=="2016-04-04"|date2=="2018-03-31"|date2=="2018-05-24"|date2=="2019-04-07"|date2=="2019-06-10")
+
+
+
+
+
+#Read in PF-CLM SNOTEL SWE Here
+for (yr in 15:21)  {
+ for (snotel_n in c("Butte","Schofield")){
+  file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/snotel_and_flux_tower/SNOTEL_%s.bl_wy20%d.txt",snotel_n,yr)
+  file_in=read.csv(file=file_name,header=FALSE,sep=" ")
+  #Declare and assign to variables
+  var_in=sprintf("snotel_%s.bl_wy%2d",snotel_n,yr)
+  as.data.frame(assign(var_in,file_in))
+ }
+}
+
+
+#Determine date for compatibility with snotel df
+wy15_dates=seq(as.POSIXct("2014-10-1 01:00:00"), as.POSIXct("2015-09-30 23:00:00"), by="hour")
+wy15_dates2=as.Date(wy15_dates,format="%Y-%m-%d")
+wy16_dates=seq(as.POSIXct("2015-10-01 01:00:00"), as.POSIXct("2016-09-30 23:00:00"), by="hour")
+wy16_dates2=as.Date(wy16_dates,format="%Y-%m-%d")
+wy17_dates=seq(as.POSIXct("2016-10-01 01:00:00"), as.POSIXct("2017-09-30 23:00:00"), by="hour")
+wy17_dates2=as.Date(wy17_dates,format="%Y-%m-%d")
+wy18_dates=seq(as.POSIXct("2017-10-01 01:00:00"), as.POSIXct("2018-09-30 23:00:00"), by="hour")
+wy18_dates2=as.Date(wy18_dates,format="%Y-%m-%d")
+wy19_dates=seq(as.POSIXct("2018-10-01 01:00:00"), as.POSIXct("2019-09-30 23:00:00"), by="hour")
+wy19_dates2=as.Date(wy19_dates,format="%Y-%m-%d")
+wy20_dates=seq(as.POSIXct("2019-10-01 01:00:00"), as.POSIXct("2020-09-30 23:00:00"), by="hour")
+wy20_dates2=as.Date(wy20_dates,format="%Y-%m-%d")
+wy21_dates=seq(as.POSIXct("2020-10-01 01:00:00"), as.POSIXct("2021-09-30 23:00:00"), by="hour")
+wy21_dates2=as.Date(wy21_dates,format="%Y-%m-%d")
+
+butte_wy15_wdate=cbind(wy15_dates2,snotel_Butte.bl_wy15)
+butte_wy16_wdate=cbind(wy16_dates2,snotel_Butte.bl_wy16)
+butte_wy17_wdate=cbind(wy17_dates2,snotel_Butte.bl_wy17)
+butte_wy18_wdate=cbind(wy18_dates2,snotel_Butte.bl_wy18)
+butte_wy19_wdate=cbind(wy19_dates2,snotel_Butte.bl_wy19)
+butte_wy20_wdate=cbind(wy20_dates2,snotel_Butte.bl_wy20)
+butte_wy21_wdate=cbind(wy21_dates2,snotel_Butte.bl_wy21)
+
+schofield_wy15_wdate=cbind(wy15_dates2,snotel_Schofield.bl_wy15)
+schofield_wy16_wdate=cbind(wy16_dates2,snotel_Schofield.bl_wy16)
+schofield_wy17_wdate=cbind(wy17_dates2,snotel_Schofield.bl_wy17)
+schofield_wy18_wdate=cbind(wy18_dates2,snotel_Schofield.bl_wy18)
+schofield_wy19_wdate=cbind(wy19_dates2,snotel_Schofield.bl_wy19)
+schofield_wy20_wdate=cbind(wy20_dates2,snotel_Schofield.bl_wy20)
+schofield_wy21_wdate=cbind(wy21_dates2,snotel_Schofield.bl_wy21)
+
+#par(mfrow = c(2,1))
+plot(x=butte_wy15_22$date2,y=butte_wy15_22$snow_water_equivalent,type="l",xlab="Calendar Year",ylab="SWE (mm)")
+lines(x=butte_stats[35:42,11],butte_stats[35:42,10],type="p",pch=2,col="black")
+#abline(v=ASO_dates_df,col="blue")
+lines(x=butte_wy15_22_aso$date2,y=butte_wy15_22_aso$snow_water_equivalent,type="p",col="deeppink2",pch=18,cex=1.5)
+lines(x=butte_wy15_wdate$wy15_dates2,y=butte_wy15_wdate$V3,col="dodgerblue2",type="l")
+lines(x=butte_wy16_wdate$wy16_dates2,y=butte_wy16_wdate$V3,col="dodgerblue2",type="l")
+lines(x=butte_wy17_wdate$wy17_dates2,y=butte_wy17_wdate$V3,col="dodgerblue2",type="l")
+lines(x=butte_wy18_wdate$wy18_dates2,y=butte_wy18_wdate$V3,col="dodgerblue2",type="l")
+lines(x=butte_wy19_wdate$wy19_dates2,y=butte_wy19_wdate$V3,col="dodgerblue2",type="l")
+lines(x=butte_wy20_wdate$wy20_dates2,y=butte_wy20_wdate$V3,col="dodgerblue2",type="l")
+lines(x=butte_wy21_wdate$wy21_dates2,y=butte_wy21_wdate$V3,col="dodgerblue2",type="l")
+
+plot(x=schofield_wy15_22$date2,y=schofield_wy15_22$snow_water_equivalent,type="l",xlab="Calendar Year",ylab="SWE (mm)")
+lines(x=schofield_stats[30:37,11],schofield_stats[30:37,10],type="p",pch=2,col="black")
+#abline(v=ASO_dates_df,col="blue")
+lines(x=schofield_wy15_22_aso$date2,y=schofield_wy15_22_aso$snow_water_equivalent,type="p",col="deeppink2",pch=18,cex=1.5)
+lines(x=schofield_wy15_wdate$wy15_dates2,y=schofield_wy15_wdate$V3,col="dodgerblue2",type="l")
+lines(x=schofield_wy16_wdate$wy16_dates2,y=schofield_wy16_wdate$V3,col="dodgerblue2",type="l")
+lines(x=schofield_wy17_wdate$wy17_dates2,y=schofield_wy17_wdate$V3,col="dodgerblue2",type="l")
+lines(x=schofield_wy18_wdate$wy18_dates2,y=schofield_wy18_wdate$V3,col="dodgerblue2",type="l")
+lines(x=schofield_wy19_wdate$wy19_dates2,y=schofield_wy19_wdate$V3,col="dodgerblue2",type="l")
+lines(x=schofield_wy20_wdate$wy20_dates2,y=schofield_wy20_wdate$V3,col="dodgerblue2",type="l")
+lines(x=schofield_wy21_wdate$wy21_dates2,y=schofield_wy21_wdate$V3,col="dodgerblue2",type="l")
+
+
+
+```
+
+```{r}
+# Fig A6 generated in SQUIRE directory #
+# Figs A7, A8, A9 generated in ASO directory #
+```
+
+```{r}
+################################################ Fig A10a ################################################ 
+discharge_obs=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/Field/discharge/doi_10.15485:1868939/All_RF_Wide_with_numbers.csv",header=TRUE,sep=",")
+
+#10-2-23 re-do above...fixed to have different x-axis, not sure where this was before
+
+#start at wy15,10/1/14, in m^3/s
+plot(x=discharge_obs[8760:70127,1]-8760,y=discharge_obs[8760:70127,3],type="l",col="gray",xlab="",xaxt='n',ylab=expression("Q (m"^3*"/s)"))
+#Simulated is m^3/h; convert to m^3/s
+lines(x=(1:8760),y=q_bl_wy15_corr[1:8760,7]/3600,col="deepskyblue4")
+lines(x=((1:8760)+(8760)),y=q_bl_wy16_corr[1:8760,7]/3600,col="deepskyblue4")
+lines(x=((1:8760)+(8760*2)),y=q_bl_wy17_corr[1:8760,7]/3600,col="deepskyblue4")
+lines(x=((1:8760)+(8760*3)),y=q_bl_wy18_corr[1:8760,7]/3600,col="deepskyblue4")
+lines(x=((1:8760)+(8760*4)),y=q_bl_wy19_corr[1:8760,7]/3600,col="deepskyblue4")
+lines(x=((1:8760)+(8760*5)),y=q_bl_wy20_corr[1:8760,7]/3600,col="deepskyblue4")
+lines(x=((1:8760)+(8760*6)),y=q_bl_wy21_corr[1:8760,7]/3600,col="deepskyblue4")
+axis(side=1, at = c(0,8760,(8760*2),(8760*3),(8760*4),(8760*5),(8760*6),(8760*7)),labels=c("WY15","WY16","WY17","WY18","WY19","WY20","WY21","WY22"))
+legend(9000*5,20.5,legend=c("Observed","ParFlow-CLM"),col=c("gray","deepskyblue4"),cex=0.8,lty=1:1)
+
+
+
+```
+
+
+
+```{r}
+############################################# Fig A10b,c ############################################# 
+
+PLM1_bl_wy2017=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/plm_validation/bl_wy2017.PLM1.txt",header=FALSE,sep=" ")
+PLM1_bl_wy2018=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/plm_validation/bl_wy2018.PLM1.txt",header=FALSE,sep=" ")
+PLM1_bl_wy2019=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/plm_validation/bl_wy2019.PLM1.txt",header=FALSE,sep=" ")
+PLM1_bl_wy2020=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/plm_validation/bl_wy2020.PLM1.txt",header=FALSE,sep=" ")
+PLM1_bl_wy2021=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/plm_validation/bl_wy2021.PLM1.txt",header=FALSE,sep=" ")
+
+PLM6_bl_wy2017=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/plm_validation/bl_wy2017.PLM6.txt",header=FALSE,sep=" ")
+PLM6_bl_wy2018=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/plm_validation/bl_wy2018.PLM6.txt",header=FALSE,sep=" ")
+PLM6_bl_wy2019=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/plm_validation/bl_wy2019.PLM6.txt",header=FALSE,sep=" ")
+PLM6_bl_wy2020=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/plm_validation/bl_wy2020.PLM6.txt",header=FALSE,sep=" ")
+PLM6_bl_wy2021=read.csv(file="/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/plm_validation/bl_wy2021.PLM6.txt",header=FALSE,sep=" ")
+
+
+par(mar = c(4, 4, 0.1, 0.1)) 
+par(mfrow=c(2,1))	
+plot(x=(PLM1_bl_wy2017[,2]/24),y=PLM1_bl_wy2017[,3],type="l",col="deepskyblue4",ylim=c(5.2,0),ylab="WTD (mbls)",xlim=c(0,365*5),lty=1,xaxt='n',xlab="")
+title("a) PLM1 ", adj=0.01,line=-0.9,cex=0.5)
+lines(x=(PLM1_bl_wy2018[,2]/24)+365,y=PLM1_bl_wy2018[,3],type="l",col="deepskyblue4",lty=1)
+lines(x=(PLM1_bl_wy2019[,2]/24)+(365)*2,y=PLM1_bl_wy2019[,3],type="l",col="deepskyblue4",lty=1)
+lines(x=(PLM1_bl_wy2020[,2]/24)+(365*3),y=PLM1_bl_wy2020[,3],type="l",col="deepskyblue4",lty=1)
+lines(x=(PLM1_bl_wy2021[,2]/24)+(365*4),y=PLM1_bl_wy2021[,3],type="l",col="deepskyblue4",lty=1)
+lines(x=PLM1_Obs_wy17[,1],y=-1*(PLM1_Obs_wy17[,4]-PLM1_Obs_elev),col="black",lty=3,lwd=1.2)
+lines(x=PLM1_Obs_wy18[,1]+365,y=-1*(PLM1_Obs_wy18[,4]-PLM1_Obs_elev),col="black",lty=3,lwd=1.2)
+lines(x=PLM1_Obs_wy19[,1]+(365*2),y=-1*(PLM1_Obs_wy19[,4]-PLM1_Obs_elev),col="black",lty=3,lwd=1.2)
+lines(x=PLM1_Obs_wy20[,1]+(365*3),y=-1*(PLM1_Obs_wy20[,4]-PLM1_Obs_elev),col="black",lty=3,lwd=1.2)
+lines(x=PLM1_Obs_wy21[,1]+(365*4),y=-1*(PLM1_Obs_wy21[,4]-PLM1_Obs_elev),col="black",lty=3,lwd=1.2)
+#yaxt="n",main=" ",cex.lab=1.0,cex.axis=1.0,horiz=TRUE,beside=TRUE,col="black",xlim=c(-2,0))
+axis(side=1, at = c(0,365,(365*2),(365*3),(365*4),(365*5)),labels=c("WY17","WY18","WY19","WY20","WY21","WY22"))
+
+
+plot(x=(PLM6_bl_wy2017[,2]/24),y=PLM6_bl_wy2017[,3],type="l",col="deepskyblue4",ylim=c(5.2,0),ylab="WTD (mbls)",xlim=c(0,365*5),lty=1,xaxt='n',xlab="")
+title("b) PLM6 ", adj=0.01,line=-0.9,cex=0.5)
+lines(x=(PLM6_bl_wy2018[,2]/24)+365,y=PLM6_bl_wy2018[,3],type="l",col="deepskyblue4",lty=1)
+lines(x=(PLM6_bl_wy2019[,2]/24)+(365)*2,y=PLM6_bl_wy2019[,3],type="l",col="deepskyblue4",lty=1)
+lines(x=(PLM6_bl_wy2020[,2]/24)+(365*3),y=PLM6_bl_wy2020[,3],type="l",col="deepskyblue4",lty=1)
+lines(x=(PLM6_bl_wy2021[,2]/24)+(365*4),y=PLM6_bl_wy2021[,3],type="l",col="deepskyblue4",lty=1)
+lines(x=PLM6_Obs_wy17[,1],y=-1*(PLM6_Obs_wy17[,4]-PLM6_Obs_elev),col="black",lty=3,lwd=1.2)
+lines(x=PLM6_Obs_wy18[,1]+365,y=-1*(PLM6_Obs_wy18[,4]-PLM6_Obs_elev),col="black",lty=3,lwd=1.2)
+lines(x=PLM6_Obs_wy19[,1]+(365*2),y=-1*(PLM6_Obs_wy19[,4]-PLM6_Obs_elev),col="black",lty=3,lwd=1.2)
+lines(x=PLM6_Obs_wy20[,1]+(365*3),y=-1*(PLM6_Obs_wy20[,4]-PLM6_Obs_elev),col="black",lty=3,lwd=1.2)
+lines(x=PLM6_Obs_wy21[,1]+(365*4),y=-1*(PLM6_Obs_wy21[,4]-PLM6_Obs_elev),col="black",lty=3,lwd=1.2)
+axis(side=1, at = c(0,365,(365*2),(365*3),(365*4),(365*5)),labels=c("WY17","WY18","WY19","WY20","WY21","WY22"))
+legend(0,3.2,legend=c("Observed","ParFlow-CLM"),col=c("gray","deepskyblue4"),cex=0.8,lty=1:1)
+
+```
+```{r}
+
+par(mar = c(4, 4, 0.1, 0.1)) 
+par(mfrow=c(2,2))	
+plot(x=(PLM1_bl_wy2017[,2]/24),y=PLM1_bl_wy2017[,3],type="l",col="royalblue4",ylim=c(5.2,0),ylab="WTD (mbls)",xlim=c(0,365),lty=1,xlab=" ")
+title("a) PLM1 Simulated", adj=0.05,line=-0.9,cex=0.5)
+lines(x=(PLM1_bl_wy2018[,2]/24),y=PLM1_bl_wy2018[,3],type="l",col="royalblue2",lty=1)
+lines(x=(PLM1_bl_wy2019[,2]/24),y=PLM1_bl_wy2019[,3],type="l",col="gray",lty=1)
+lines(x=(PLM1_bl_wy2020[,2]/24),y=PLM1_bl_wy2020[,3],type="l",col="navajowhite2",lty=1)
+lines(x=(PLM1_bl_wy2021[,2]/24),y=PLM1_bl_wy2021[,3],type="l",col="tan2",lty=1)
+legend(270,2.3,legend=c("WY17","WY18","WY19","WY20","WY21"),col=c("royalblue4","royalblue2","gray","navajowhite2","tan2"),cex=0.8,lty=1:1)
+
+
+plot(x=PLM1_Obs_wy17[,1],y=-1*(PLM1_Obs_wy17[,4]-PLM1_Obs_elev),col="royalblue4",ylim=c(5.2,0),ylab=" ",xlab=" ",xlim=c(0,365),lty=1,type="l")
+title("b) PLM1 Observed", adj=0.05,line=-0.9,cex=0.5)
+lines(x=PLM1_Obs_wy18[,1],y=-1*(PLM1_Obs_wy18[,4]-PLM1_Obs_elev),col="royalblue2",lty=1,lwd=1.2)
+lines(x=PLM1_Obs_wy19[,1],y=-1*(PLM1_Obs_wy19[,4]-PLM1_Obs_elev),col="gray",lty=1,lwd=1.2)
+lines(x=PLM1_Obs_wy20[,1],y=-1*(PLM1_Obs_wy20[,4]-PLM1_Obs_elev),col="navajowhite2",lty=1,lwd=1.2)
+lines(x=PLM1_Obs_wy21[,1],y=-1*(PLM1_Obs_wy21[,4]-PLM1_Obs_elev),col="tan2",lty=1,lwd=1.2)
+
+#par(mfrow=c(1,2))	
+plot(x=(PLM6_bl_wy2017[,2]/24),y=PLM6_bl_wy2017[,3],type="l",col="royalblue4",ylim=c(5.2,0),ylab="WTD (mbls)",xlim=c(0,365),lty=1,xlab="Day of WY (-)")
+title("c) PLM6 Simulated", adj=0.05,line=-0.9,cex=0.5)
+lines(x=(PLM6_bl_wy2018[,2]/24),y=PLM6_bl_wy2018[,3],type="l",col="royalblue2",lty=1)
+lines(x=(PLM6_bl_wy2019[,2]/24),y=PLM6_bl_wy2019[,3],type="l",col="gray",lty=1)
+lines(x=(PLM6_bl_wy2020[,2]/24),y=PLM6_bl_wy2020[,3],type="l",col="navajowhite2",lty=1)
+lines(x=(PLM6_bl_wy2021[,2]/24),y=PLM6_bl_wy2021[,3],type="l",col="tan2",lty=1)
+#legend(0,2.3,legend=c("WY17","WY18","WY19","WY20","WY21"),col=c("royalblue4","royalblue2","gray","navajowhite2","tan2"),cex=0.8,lty=1:1)
+
+plot(x=PLM6_Obs_wy17[,1],y=-1*(PLM6_Obs_wy17[,4]-PLM6_Obs_elev),col="royalblue4",ylim=c(5.2,0),ylab=" ",xlab="Day of WY (-)",xlim=c(0,365),lty=1,type="l")
+title("d) PLM6 Observed", adj=0.05,line=-0.9,cex=0.5)
+lines(x=PLM6_Obs_wy18[,1],y=-1*(PLM6_Obs_wy18[,4]-PLM6_Obs_elev),col="royalblue2",lty=1,lwd=1.2)
+lines(x=PLM6_Obs_wy19[,1],y=-1*(PLM6_Obs_wy19[,4]-PLM6_Obs_elev),col="gray",lty=1,lwd=1.2)
+lines(x=PLM6_Obs_wy20[,1],y=-1*(PLM6_Obs_wy20[,4]-PLM6_Obs_elev),col="navajowhite2",lty=1,lwd=1.2)
+lines(x=PLM6_Obs_wy21[,1],y=-1*(PLM6_Obs_wy21[,4]-PLM6_Obs_elev),col="tan2",lty=1,lwd=1.2)
+
+```
+
+
+```{r}
+########################### Fig. A11 ###################################################### 
+#ParFlow-CLM ET only#
+#MODIS and SSEBop images in SSEBop_MODIS16 directories#
+
+nx=150
+ny=170
+
+ ######################### annual ET maps ######################### 
+
+et_annual_bl_array=matrix(0,nrow=150,ncol=170)
+n_et_annual_bl_array=matrix(0,nrow=150,ncol=170)
+y1to7_et_annual_bl_array=matrix(0,nrow=150,ncol=170)
+
+for (yr in 15:21)  {
+
+#NLDAS
+file_name=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/et_annual_map.bl_wy20%2d.txt",yr)
+file_in=read.csv(file=file_name,header=FALSE,sep="\n")
+var_in=sprintf("et_annual_bl_wy20%2d",yr)
+assign(var_in,file_in)
+
+file_name2=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/n_et_annual_map.bl_wy20%2d.txt",yr)
+file_in2=read.csv(file=file_name2,header=FALSE,sep="\n")
+var_in2=sprintf("n_et_annual_bl_wy20%2d",yr)
+assign(var_in2,file_in2)
+
+count=1
+for (j in 1:ny)  {	
+  for (i in 1:nx)  {
+    et_annual_bl_array[i,j]=file_in[count,1]
+    n_et_annual_bl_array[i,j]=file_in2[count,1]
+    y1to7_et_annual_bl_array[i,j]=y1to7_et_annual_bl_array[i,j]+et_annual_bl_array[i,j]-n_et_annual_bl_array[i,j]
+    count=count+1
+  }}
+
+cat("WY: ",yr,"ET MEAN,MIN,MAX:","\n")
+cat(mean(et_annual_bl_array))
+cat(" ")
+cat(min(et_annual_bl_array))
+cat(" ")
+cat(max(et_annual_bl_array))
+cat("\n")
+
+cat("WY: ",yr,"NEGATIVE ET MEAN,MIN,MAX:","\n")
+cat(mean(n_et_annual_bl_array))
+cat(" ")
+cat(min(n_et_annual_bl_array))
+cat(" ")
+cat(max(n_et_annual_bl_array))
+cat("\n")
+
+cat("WY: ",yr,"NET_ET MEAN,MIN,MAX:","\n")
+cat(mean(et_annual_bl_array)-mean(n_et_annual_bl_array))
+cat("\n")
+
+#image.plot(et_annual_bl_array, xaxt='n', yaxt='n')
+#image.plot(n_et_annual_bl_array, xaxt='n', yaxt='n')
+#image.plot(et_annual_bl_array-n_et_annual_bl_array, xaxt='n', yaxt='n',col=q33)
+
+#boxplot(file_in-file_in2,ylim=c(0,700))
+}#End WYs
+
+
+# 7 year combined maps and boxplot
+image.plot(y1to7_et_annual_bl_array/7, xaxt='n', yaxt='n',col=q33)
+
+df=as.data.frame(y1to7_et_annual_bl_array/7)
+list=unlist(df)
+#boxplot(list)
+```
+
+
+
+
+
+
+```{r}
+############################ Fig A 13 ##################################
+
+#use NEON LULC
+vegm_n=read.table("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/find_drv_vegm/neon_sa.nh.sa",sep="\t")
+dim(vegm_n)
+
+ccc=1
+vegm_n_matrix=matrix(0,nrow=150,ncol=170)
+for (j in 1:ny)  {	
+  for (i in 1:nx)  {
+    vegm_n_matrix[i,j]=vegm_n[ccc,1]
+    ccc=ccc+1
+  }
+}
+image.plot(vegm_n_matrix)
+
+```
+
+```{r}
+#Plot wtd change at select points in time 
+#When are changes in WTD greatest? WY19 -- what day?
+#5.725409 on Day 312, 312*24 = 7488
+
+fin_plot_bl=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/pressure_files/complete_set/bl_wy2019.out.press.07488.pfb") 
+fin_plot_2.5=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/pressure_files/complete_set/2.5_wy2019.out.press.07488.pfb") 
+fin_plot_4.0=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/pressure_files/complete_set/4.0_wy2019.out.press.07488.pfb") 	
+
+press_plot_bl=readpfb(fin_plot_bl,F)
+press_plot_2.5=readpfb(fin_plot_2.5,F)
+press_plot_4.0=readpfb(fin_plot_4.0,F)
+
+```
+
+```{r}
+par(mfrow=c(1,2))	
+
+plot(x=(press_plot_2.5[1,1,1]-press_plot_bl[1,1,1]),y=dem[1,1,1],type="p",ylim=c(2700,4100),xlim=c(-7,-0.001),ylab="Elevation (m)",xlab="d(WTD) from Baseline (m)",col="white")
+
+for (x in 1:nx) {
+  for (y in 1:ny ) {
+   if (subbasin_fa[x,y]>0){
+     
+    if (vegm_n_matrix[x,y]==1){ #evergreen needleleaf forests
+      lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="darkgreen")
+    }
+    if (vegm_n_matrix[x,y]==3){ #decid needleleaf
+      lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="yellowgreen")
+    }
+    if (vegm_n_matrix[x,y]==4){ #decid broadleaf
+      lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="lightsalmon2")
+    }
+    #if (vegm_n_matrix[x,y]==5){ #mixed forest
+    #  lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="olive")
+    #}
+    if (vegm_n_matrix[x,y]==6){ #closed shrubland
+      lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="tan1")
+    }     
+     if (vegm_n_matrix[x,y]==7){ #open shrubland
+      lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="firebrick2")
+    }    
+    if (vegm_n_matrix[x,y]==10){ #grassland (Meadows in NEON)
+      lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="lightgoldenrod2")
+    }     
+    if (vegm_n_matrix[x,y]==13){ #urban
+      lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="black")
+    }     
+    if (vegm_n_matrix[x,y]==15){ #snow ice
+      lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="gray")
+    }     
+    if (vegm_n_matrix[x,y]==16){ #barren
+      lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="brown")
+    }     
+    #if (vegm_n_matrix[x,y]==17){ #water bodies
+    #  lines(x=(press_plot_2.5[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="blue")
+    #}     
+     
+   }#if subbasin
+  }#ny
+}#nx
+
+plot(x=(press_plot_4.0[1,1,1]-press_plot_bl[1,1,1]),y=dem[1,1,1],type="p",ylim=c(2700,4100),xlim=c(-7,-0.001),ylab="Elevation (m)",xlab="d(WTD) from Baseline (m)",col="white")
+
+for (x in 1:nx) {
+  for (y in 1:ny ) {
+   if (subbasin_fa[x,y]>0){
+     
+    if (vegm_n_matrix[x,y]==1){ #evergreen needleleaf forests
+      lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="darkgreen")
+    }
+    if (vegm_n_matrix[x,y]==3){ #decid needleleaf
+      lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="yellowgreen")
+    }
+    if (vegm_n_matrix[x,y]==4){ #decid broadleaf
+      lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="lightsalmon2")
+    }
+    #if (vegm_n_matrix[x,y]==5){ #mixed forest
+    #  lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="olive")
+    #}
+    if (vegm_n_matrix[x,y]==6){ #closed shrubland
+      lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="tan1")
+    }     
+     if (vegm_n_matrix[x,y]==7){ #open shrubland
+      lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="firebrick2")
+    }    
+    if (vegm_n_matrix[x,y]==10){ #grassland (Meadows in NEON)
+      lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="lightgoldenrod2")
+    }     
+    if (vegm_n_matrix[x,y]==13){ #urban
+      lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="black")
+    }     
+    if (vegm_n_matrix[x,y]==15){ #snow ice
+      lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="gray")
+    }     
+    if (vegm_n_matrix[x,y]==16){ #barren
+      lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="brown")
+    }     
+    #if (vegm_n_matrix[x,y]==17){ #water bodies
+    #  lines(x=(press_plot_4.0[x,y,1]-press_plot_bl[x,y,1]),y=dem[x,y,1],type="p",cex=0.3,col="blue")
+    #}     
+     
+   }#if subbasin
+  }#ny
+}#nx
+
+```
+
+```{r}
+#Fig. A14 Generated in EcoSLIM directory #
+#Fig. A15 Generated in EcoSLIM directory #
+```
+
+
+```{r}
+#Fig. A17
+#As par of RRC2, Aug 2025
+
+#Eddy Covariance Flux Tower from A. Ryken
+fin_flux_tower=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/from_Anna_July_2025/FluxTower_Pumphouse_ESS-DIVE.ET_only.h.txt") 
+flux_tower=read.csv(file=fin_flux_tower,header=TRUE,sep="\t")
+
+
+plot(x=as.Date(flux_tower$DAY_MT,"%m/%d/%y"),y=flux_tower$ET_mm.day, xlab="Date",ylab="ET (mm/d)")
+```
+
+
+```{r}
+#Sap flux Transpiration from A. Ryken (via Max Berkelhammer)
+fin_sflux=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/from_Anna_July_2025/MaxB_Transpiration_5Sites.daily_sums.h.txt") 
+sflux=read.csv(file=fin_sflux,header=TRUE,sep="\t")
+
+
+plot(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Aspen.1, xlab="Date",ylab="ET (mm/d)")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Aspen.Conifer.1, col="red3",type="points")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Conifer1.1,col="orange3",type="points")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Conifer2.1,col="yellow4",type="points")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Conifer3.1,col="green4",type="points")
+```
+
+```{r}
+plot(x=as.Date(flux_tower$DAY_MT,"%m/%d/%y"),y=flux_tower$ET_mm.day, xlab="Date",ylab="ET (mm/d)",xlim=c(18060,18165),ylim=c(0,6.5),pch=18)
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Aspen.1, type="points",col="blue3")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Aspen.Conifer.1, col="red3",type="points")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Conifer1.1,col="orange3",type="points")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Conifer2.1,col="yellow4",type="points")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Conifer3.1,col="green4",type="points")
+```
+```{r}
+#Parflow-CLM ET timeseries
+#1) Watershed-scale average (ER Only)
+fin_et_17=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2017.et_timeseries_ERonly_all.txt") 
+fin_t_17=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2017.tran_veg_timeseries_ERonly_all.txt") 
+et_17=read.csv(file=fin_et_17,header=FALSE,sep=" ")
+t_17=read.csv(file=fin_t_17,header=FALSE,sep=" ")
+
+fin_et_18=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2018.et_timeseries_ERonly_all.txt") 
+fin_t_18=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2018.tran_veg_timeseries_ERonly_all.txt") 
+et_18=read.csv(file=fin_et_18,header=FALSE,sep=" ")
+t_18=read.csv(file=fin_t_18,header=FALSE,sep=" ")
+
+fin_et_19=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2019.et_timeseries_ERonly_all.txt") 
+fin_t_19=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2019.tran_veg_timeseries_ERonly_all.txt") 
+et_19=read.csv(file=fin_et_19,header=FALSE,sep=" ")
+t_19=read.csv(file=fin_t_19,header=FALSE,sep=" ")
+
+#1b) Positive ET values only
+etpos_17=et_17
+etpos_17[[3]][etpos_17[[3]] < 0] <- 0
+
+etpos_18=et_18
+etpos_18[[3]][etpos_18[[3]] < 0] <- 0
+
+etpos_19=et_19
+etpos_19[[3]][etpos_19[[3]] < 0] <- 0
+
+#2) Subbasins average
+fin_tsub_17=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2017.tran_veg_subbasins.txt") 
+tsub_17=read.csv(file=fin_tsub_17,header=FALSE,sep=" ")
+
+fin_tsub_18=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2018.tran_veg_subbasins.txt") 
+tsub_18=read.csv(file=fin_tsub_18,header=FALSE,sep=" ")
+
+fin_tsub_19=sprintf("/Users/ERWoodburn/Desktop/erica_copy/data/east_river/er_deltat_fall22/results/baseline_neon/bl_wy2019.tran_veg_subbasins.txt") 
+tsub_19=read.csv(file=fin_tsub_19,header=FALSE,sep=" ")
+
+#Make daily sum
+# Number of days (assuming 24 hourly values per day)
+num_days <- (length(et[,3])+1) / 24
+
+# Create empty vector to store daily sums
+et_daily_sums_17 <- numeric(num_days)
+et_daily_sums_18 <- numeric(num_days)
+et_daily_sums_19 <- numeric(num_days)
+
+t_daily_sums_17 <- numeric(num_days)
+t_daily_sums_18 <- numeric(num_days)
+t_daily_sums_19 <- numeric(num_days)
+
+etpos_daily_sums_17 <- numeric(num_days)
+etpos_daily_sums_18 <- numeric(num_days)
+etpos_daily_sums_19 <- numeric(num_days)
+
+tsub_daily_sums_17 <- numeric(num_days)
+tsub_daily_sums_18 <- numeric(num_days)
+tsub_daily_sums_19 <- numeric(num_days)
+
+# Loop through each day
+for (i in 1:num_days) {
+  # Define start and end indices for each day
+  start_index <- (i - 1) * 24 + 1
+  end_index <- i * 24
+  
+  # Sum the 24 hourly values
+  et_daily_sums_17[i] <- sum(et_17[start_index:end_index,3])
+  et_daily_sums_18[i] <- sum(et_18[start_index:end_index,3])
+  et_daily_sums_19[i] <- sum(et_19[start_index:end_index,3])
+ 
+  etpos_daily_sums_17[i] <- sum(etpos_17[start_index:end_index,3])
+  etpos_daily_sums_18[i] <- sum(etpos_18[start_index:end_index,3])
+  etpos_daily_sums_19[i] <- sum(etpos_19[start_index:end_index,3])
+  
+  t_daily_sums_17[i] <- sum(t_17[start_index:end_index,3])
+  t_daily_sums_18[i] <- sum(t_18[start_index:end_index,3])
+  t_daily_sums_19[i] <- sum(t_19[start_index:end_index,3])
+  
+  
+  #THIRD TO LAST (column 8/10) IS HIGHEST T SUBBASIN
+  tsub_daily_sums_17[i] <- sum(tsub_17[start_index:end_index,8])
+  tsub_daily_sums_18[i] <- sum(tsub_18[start_index:end_index,8])
+  tsub_daily_sums_19[i] <- sum(tsub_19[start_index:end_index,8])
+
+}
+
+#print(daily_sums_17)
+
+
+
+#append a date column
+dates_2017 <- seq(from = as.Date("10/1/16","%m/%d/%y"), to = as.Date("9/30/17","%m/%d/%y"), by = "day")
+dates_2018 <- seq(from = as.Date("10/1/17","%m/%d/%y"), to = as.Date("9/30/18","%m/%d/%y"), by = "day")
+dates_2019 <- seq(from = as.Date("10/1/18","%m/%d/%y"), to = as.Date("9/30/19","%m/%d/%y"), by = "day")
+dates_2017_char=as.numeric(dates_2017)
+dates_2018_char=as.numeric(dates_2018)
+dates_2019_char=as.numeric(dates_2019)
+
+et_dated_17=cbind(dates_2017_char,et_daily_sums_17)
+et_dated_18=cbind(dates_2018_char,et_daily_sums_18)
+et_dated_19=cbind(dates_2019_char,et_daily_sums_19)
+
+etpos_dated_17=cbind(dates_2017_char,etpos_daily_sums_17)
+etpos_dated_18=cbind(dates_2018_char,etpos_daily_sums_18)
+etpos_dated_19=cbind(dates_2019_char,etpos_daily_sums_19)
+
+t_dated_17=cbind(dates_2017_char,t_daily_sums_17)
+t_dated_18=cbind(dates_2018_char,t_daily_sums_18)
+t_dated_19=cbind(dates_2019_char,t_daily_sums_19)
+
+tsub_dated_17=cbind(dates_2017_char,tsub_daily_sums_17)
+tsub_dated_18=cbind(dates_2018_char,tsub_daily_sums_18)
+tsub_dated_19=cbind(dates_2019_char,tsub_daily_sums_19)
+
+
+#Transpiration only
+#plot(x=as.Date(et_dated_17[,1]),y=et_dated_17[,2],xlab="Date",ylab="T or ET (mm/d)",xlim=c(17075,18165),ylim=c(0,6.5),col="gray",pch=9,type="points")
+#lines(x=as.Date(et_dated_18[,1]),y=et_dated_18[,2],col="gray",pch=9,type="points")
+plot(x=as.Date(t_dated_19[,1]),y=t_dated_19[,2],col="black",pch=20,type="points",xlim=c(18060,18165),ylim=c(0,6.2),xlab="Date",ylab="T (mm/d)")
+#lines(x=as.Date(tsub_dated_19[,1]),y=tsub_dated_19[,2],col="purple",pch=9,type="points")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Aspen.1, type="points",col="blue3")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Aspen.Conifer.1, col="red3",type="points")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Conifer1.1,col="orange3",type="points")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Conifer2.1,col="yellow4",type="points")
+lines(x=as.Date(sflux$X,"%m/%d/%y"),y=sflux$Conifer3.1,col="green4",type="points")
+legend("topright",6,legend=c("ParFlow-CLM","Aspen1","Aspen-Conifer","Conifer1","Conifer2","Conifer3"),col=c("black","red3","blue3","orange3","yellow4","green4"),cex=0.8,pch=c(20,1,1,1,1,1),bty = "n")
+
+```
+
+
+```{r}
+
+#Include Neg PF-CLM ET
+#plot(x=as.Date(flux_tower$DAY_MT,"%m/%d/%y"),y=flux_tower$ET_mm.day,pch=18,col="black",type="points", xlab="Date",ylab="ET (mm/d)")
+#lines(x=as.Date(et_dated_17[,1]),y=et_dated_17[,2],xlab="Date",ylab="ET (mm/d)",col="gray",pch=9,type="points")
+#lines(x=as.Date(et_dated_18[,1]),y=et_dated_18[,2],xlab="Date",ylab="ET (mm/d)",col="gray",pch=9,type="points")
+#lines(x=as.Date(et_dated_19[,1]),y=et_dated_19[,2],xlab="Date",ylab="ET (mm/d)",col="gray",pch=9,type="points")
+#replot black lines on top again
+#lines(x=as.Date(flux_tower$DAY_MT,"%m/%d/%y"),y=flux_tower$ET_mm.day,pch=18,col="black",type="points")
+#axis.Date(1, at = as.Date(flux_tower$DAY_MT,"%m/%d/%y"), format = "%m/%d/%y")
+
+
+#Positive PF-CLM ET Only
+plot(x=as.Date(flux_tower$DAY_MT,"%m/%d/%y"),y=flux_tower$ET_mm.day,pch=18,col="black",type="points", xlab="Date",ylab="ET (mm/d)",ylim=c(0,6))
+lines(x=as.Date(etpos_dated_17[,1]),y=etpos_dated_17[,2],xlab="Date",ylab="ET (mm/d)",col="gray",pch=9,type="points")
+lines(x=as.Date(etpos_dated_18[,1]),y=etpos_dated_18[,2],xlab="Date",ylab="ET (mm/d)",col="gray",pch=9,type="points")
+lines(x=as.Date(etpos_dated_19[,1]),y=etpos_dated_19[,2],xlab="Date",ylab="ET (mm/d)",col="gray",pch=9,type="points")
+#replot black lines on top again
+lines(x=as.Date(flux_tower$DAY_MT,"%m/%d/%y"),y=flux_tower$ET_mm.day,pch=18,col="black",type="points")
+#axis.Date(1, at = dates, format = "%b %d, %Y")
+legend("topleft",6,legend=c("Flux Tower","ParFlow-CLM"),col=c("black","gray"),cex=0.8,pch=c(18,9),bty = "n")
+
+```
+
+```{r}
+################################## Table A1 and A2 ######################################
+
+rp_ratio_table=matrix(0,nrow=7,ncol=7)
+
+wy=1
+#cat("wy15 R/P RATIOS",a=(cum_rainfall_baseline_wy15[8759,1]/cum_precip_baseline_wy15[8759,1]),b=(cum_rainfall_2.5_wy15[8759,1]/cum_precip_baseline_wy15[8759,1]),c=(cum_rainfall_4.0_wy15[8759,1]/cum_precip_baseline_wy15[8759,1]),"\n")
+a=(cum_rainfall_baseline_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])
+b=(cum_rainfall_2.5_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])
+c=(cum_rainfall_4.0_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])
+
+#cat("wy15 % diff from Bl",d=((cum_rainfall_baseline_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])-(cum_rainfall_2.5_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])),e=((cum_rainfall_baseline_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])-(cum_rainfall_4.0_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])),"\n")
+d=((cum_rainfall_baseline_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])-(cum_rainfall_2.5_wy15[8759,1]/cum_precip_baseline_wy15[8759,1]))
+e=((cum_rainfall_baseline_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])-(cum_rainfall_4.0_wy15[8759,1]/cum_precip_baseline_wy15[8759,1]))
+
+#cat("wy15 % incr per degree",f=((cum_rainfall_baseline_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])-(cum_rainfall_2.5_wy15[8759,1]/cum_precip_baseline_wy15[8759,1]))/2.5,g=((cum_rainfall_baseline_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])-(cum_rainfall_4.0_wy15[8759,1]/cum_precip_baseline_wy15[8759,1]))/4.0,"\n","\n")
+f=((cum_rainfall_baseline_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])-(cum_rainfall_2.5_wy15[8759,1]/cum_precip_baseline_wy15[8759,1]))/2.5
+g=((cum_rainfall_baseline_wy15[8759,1]/cum_precip_baseline_wy15[8759,1])-(cum_rainfall_4.0_wy15[8759,1]/cum_precip_baseline_wy15[8759,1]))/4.0
+
+rp_ratio_table[wy,1]=round(a*100,digits=0)
+rp_ratio_table[wy,2]=round(b*100,digits=0)
+rp_ratio_table[wy,3]=round(c*100,digits=0)
+rp_ratio_table[wy,4]=round(d*100,digits=0)
+rp_ratio_table[wy,5]=round(e*100,digits=0)
+rp_ratio_table[wy,6]=round(f*100,digits=1)
+rp_ratio_table[wy,7]=round(g*100,digits=1)
+
+wy=2
+a=(cum_rainfall_baseline_wy16[8759,1]/cum_precip_baseline_wy16[8759,1])
+b=(cum_rainfall_2.5_wy16[8759,1]/cum_precip_baseline_wy16[8759,1])
+c=(cum_rainfall_4.0_wy16[8759,1]/cum_precip_baseline_wy16[8759,1])
+d=((cum_rainfall_baseline_wy16[8759,1]/cum_precip_baseline_wy16[8759,1])-(cum_rainfall_2.5_wy16[8759,1]/cum_precip_baseline_wy16[8759,1]))
+e=((cum_rainfall_baseline_wy16[8759,1]/cum_precip_baseline_wy16[8759,1])-(cum_rainfall_4.0_wy16[8759,1]/cum_precip_baseline_wy16[8759,1]))
+f=((cum_rainfall_baseline_wy16[8759,1]/cum_precip_baseline_wy16[8759,1])-(cum_rainfall_2.5_wy16[8759,1]/cum_precip_baseline_wy16[8759,1]))/2.5
+g=((cum_rainfall_baseline_wy16[8759,1]/cum_precip_baseline_wy16[8759,1])-(cum_rainfall_4.0_wy16[8759,1]/cum_precip_baseline_wy16[8759,1]))/4.0
+rp_ratio_table[wy,1]=round(a*100,digits=0)
+rp_ratio_table[wy,2]=round(b*100,digits=0)
+rp_ratio_table[wy,3]=round(c*100,digits=0)
+rp_ratio_table[wy,4]=round(d*100,digits=0)
+rp_ratio_table[wy,5]=round(e*100,digits=0)
+rp_ratio_table[wy,6]=round(f*100,digits=1)
+rp_ratio_table[wy,7]=round(g*100,digits=1)
+
+wy=3
+a=(cum_rainfall_baseline_wy17[8759,1]/cum_precip_baseline_wy17[8759,1])
+b=(cum_rainfall_2.5_wy17[8759,1]/cum_precip_baseline_wy17[8759,1])
+c=(cum_rainfall_4.0_wy17[8759,1]/cum_precip_baseline_wy17[8759,1])
+d=((cum_rainfall_baseline_wy17[8759,1]/cum_precip_baseline_wy17[8759,1])-(cum_rainfall_2.5_wy17[8759,1]/cum_precip_baseline_wy17[8759,1]))
+e=((cum_rainfall_baseline_wy17[8759,1]/cum_precip_baseline_wy17[8759,1])-(cum_rainfall_4.0_wy17[8759,1]/cum_precip_baseline_wy17[8759,1]))
+f=((cum_rainfall_baseline_wy17[8759,1]/cum_precip_baseline_wy17[8759,1])-(cum_rainfall_2.5_wy17[8759,1]/cum_precip_baseline_wy17[8759,1]))/2.5
+g=((cum_rainfall_baseline_wy17[8759,1]/cum_precip_baseline_wy17[8759,1])-(cum_rainfall_4.0_wy17[8759,1]/cum_precip_baseline_wy17[8759,1]))/4.0
+rp_ratio_table[wy,1]=round(a*100,digits=0)
+rp_ratio_table[wy,2]=round(b*100,digits=0)
+rp_ratio_table[wy,3]=round(c*100,digits=0)
+rp_ratio_table[wy,4]=round(d*100,digits=0)
+rp_ratio_table[wy,5]=round(e*100,digits=0)
+rp_ratio_table[wy,6]=round(f*100,digits=1)
+rp_ratio_table[wy,7]=round(g*100,digits=1)
+
+wy=4
+a=(cum_rainfall_baseline_wy18[8759,1]/cum_precip_baseline_wy18[8759,1])
+b=(cum_rainfall_2.5_wy18[8759,1]/cum_precip_baseline_wy18[8759,1])
+c=(cum_rainfall_4.0_wy18[8759,1]/cum_precip_baseline_wy18[8759,1])
+d=((cum_rainfall_baseline_wy18[8759,1]/cum_precip_baseline_wy18[8759,1])-(cum_rainfall_2.5_wy18[8759,1]/cum_precip_baseline_wy18[8759,1]))
+e=((cum_rainfall_baseline_wy18[8759,1]/cum_precip_baseline_wy18[8759,1])-(cum_rainfall_4.0_wy18[8759,1]/cum_precip_baseline_wy18[8759,1]))
+f=((cum_rainfall_baseline_wy18[8759,1]/cum_precip_baseline_wy18[8759,1])-(cum_rainfall_2.5_wy18[8759,1]/cum_precip_baseline_wy18[8759,1]))/2.5
+g=((cum_rainfall_baseline_wy18[8759,1]/cum_precip_baseline_wy18[8759,1])-(cum_rainfall_4.0_wy18[8759,1]/cum_precip_baseline_wy18[8759,1]))/4.0
+rp_ratio_table[wy,1]=round(a*100,digits=0)
+rp_ratio_table[wy,2]=round(b*100,digits=0)
+rp_ratio_table[wy,3]=round(c*100,digits=0)
+rp_ratio_table[wy,4]=round(d*100,digits=0)
+rp_ratio_table[wy,5]=round(e*100,digits=0)
+rp_ratio_table[wy,6]=round(f*100,digits=1)
+rp_ratio_table[wy,7]=round(g*100,digits=1)
+
+wy=5
+a=(cum_rainfall_baseline_wy19[8759,1]/cum_precip_baseline_wy19[8759,1])
+b=(cum_rainfall_2.5_wy19[8759,1]/cum_precip_baseline_wy19[8759,1])
+c=(cum_rainfall_4.0_wy19[8759,1]/cum_precip_baseline_wy19[8759,1])
+d=((cum_rainfall_baseline_wy19[8759,1]/cum_precip_baseline_wy19[8759,1])-(cum_rainfall_2.5_wy19[8759,1]/cum_precip_baseline_wy19[8759,1]))
+e=((cum_rainfall_baseline_wy19[8759,1]/cum_precip_baseline_wy19[8759,1])-(cum_rainfall_4.0_wy19[8759,1]/cum_precip_baseline_wy19[8759,1]))
+f=((cum_rainfall_baseline_wy19[8759,1]/cum_precip_baseline_wy19[8759,1])-(cum_rainfall_2.5_wy19[8759,1]/cum_precip_baseline_wy19[8759,1]))/2.5
+g=((cum_rainfall_baseline_wy19[8759,1]/cum_precip_baseline_wy19[8759,1])-(cum_rainfall_4.0_wy19[8759,1]/cum_precip_baseline_wy19[8759,1]))/4.0
+rp_ratio_table[wy,1]=round(a*100,digits=0)
+rp_ratio_table[wy,2]=round(b*100,digits=0)
+rp_ratio_table[wy,3]=round(c*100,digits=0)
+rp_ratio_table[wy,4]=round(d*100,digits=0)
+rp_ratio_table[wy,5]=round(e*100,digits=0)
+rp_ratio_table[wy,6]=round(f*100,digits=1)
+rp_ratio_table[wy,7]=round(g*100,digits=1)
+
+wy=6
+a=(cum_rainfall_baseline_wy20[8759,1]/cum_precip_baseline_wy20[8759,1])
+b=(cum_rainfall_2.5_wy20[8759,1]/cum_precip_baseline_wy20[8759,1])
+c=(cum_rainfall_4.0_wy20[8759,1]/cum_precip_baseline_wy20[8759,1])
+d=((cum_rainfall_baseline_wy20[8759,1]/cum_precip_baseline_wy20[8759,1])-(cum_rainfall_2.5_wy20[8759,1]/cum_precip_baseline_wy20[8759,1]))
+e=((cum_rainfall_baseline_wy20[8759,1]/cum_precip_baseline_wy20[8759,1])-(cum_rainfall_4.0_wy20[8759,1]/cum_precip_baseline_wy20[8759,1]))
+f=((cum_rainfall_baseline_wy20[8759,1]/cum_precip_baseline_wy20[8759,1])-(cum_rainfall_2.5_wy20[8759,1]/cum_precip_baseline_wy20[8759,1]))/2.5
+g=((cum_rainfall_baseline_wy20[8759,1]/cum_precip_baseline_wy20[8759,1])-(cum_rainfall_4.0_wy20[8759,1]/cum_precip_baseline_wy20[8759,1]))/4.0
+rp_ratio_table[wy,1]=round(a*100,digits=0)
+rp_ratio_table[wy,2]=round(b*100,digits=0)
+rp_ratio_table[wy,3]=round(c*100,digits=0)
+rp_ratio_table[wy,4]=round(d*100,digits=0)
+rp_ratio_table[wy,5]=round(e*100,digits=0)
+rp_ratio_table[wy,6]=round(f*100,digits=1)
+rp_ratio_table[wy,7]=round(g*100,digits=1)
+
+wy=7
+a=(cum_rainfall_baseline_wy21[8759,1]/cum_precip_baseline_wy21[8759,1])
+b=(cum_rainfall_2.5_wy21[8759,1]/cum_precip_baseline_wy21[8759,1])
+c=(cum_rainfall_4.0_wy21[8759,1]/cum_precip_baseline_wy21[8759,1])
+d=((cum_rainfall_baseline_wy21[8759,1]/cum_precip_baseline_wy21[8759,1])-(cum_rainfall_2.5_wy21[8759,1]/cum_precip_baseline_wy21[8759,1]))
+e=((cum_rainfall_baseline_wy21[8759,1]/cum_precip_baseline_wy21[8759,1])-(cum_rainfall_4.0_wy21[8759,1]/cum_precip_baseline_wy21[8759,1]))
+f=((cum_rainfall_baseline_wy21[8759,1]/cum_precip_baseline_wy21[8759,1])-(cum_rainfall_2.5_wy21[8759,1]/cum_precip_baseline_wy21[8759,1]))/2.5
+g=((cum_rainfall_baseline_wy21[8759,1]/cum_precip_baseline_wy21[8759,1])-(cum_rainfall_4.0_wy21[8759,1]/cum_precip_baseline_wy21[8759,1]))/4.0
+rp_ratio_table[wy,1]=round(a*100,digits=0)
+rp_ratio_table[wy,2]=round(b*100,digits=0)
+rp_ratio_table[wy,3]=round(c*100,digits=0)
+rp_ratio_table[wy,4]=round(d*100,digits=0)
+rp_ratio_table[wy,5]=round(e*100,digits=0)
+rp_ratio_table[wy,6]=round(f*100,digits=1)
+rp_ratio_table[wy,7]=round(g*100,digits=1)
+
+rp_ratio_table
+
+```
+```{r}
+plot(x=c(2015,2016,2017,2018,2019,2020,2021), y=rp_ratio_table[,1],ylim=c(20,60),pch=16,ylab="Rain Fraction (%)",xlab=" ")
+points(x=c(2015,2016,2017,2018,2019,2020,2021), y=rp_ratio_table[,2],col="orange",pch=16)
+points(x=c(2015,2016,2017,2018,2019,2020,2021), y=rp_ratio_table[,3],col="red",pch=16)
+
+plot(x=c(2015,2016,2017,2018,2019,2020,2021), y=abs(rp_ratio_table[,4]),col="orange",ylim=c(0,30),ylab="Increase in Rain Fraction with Warming (%)",xlab=" ",pch=16)
+points(x=c(2015,2016,2017,2018,2019,2020,2021), y=abs(rp_ratio_table[,5]),col="red",pch=16)
+
+plot(x=c(2015,2016,2017,2018,2019,2020,2021), y=abs(rp_ratio_table[,6]),col="orange",ylim=c(1,7),ylab="Increase in Rain Fraction per Deg C (%)",xlab=" ",pch=16)
+points(x=c(2015,2016,2017,2018,2019,2020,2021), y=abs(rp_ratio_table[,7]),col="red",pch=16)
+
+#temporal average increase in rain fraction with 2.5 deg is:
+mean(abs(rp_ratio_table[,4]))
+#temporal average increase in rain fraction with 4.0 deg is:
+mean(abs(rp_ratio_table[,5]))
+
+
+#temporal average increase in rain fraction PER DEG C with 2.5 deg is:
+mean(abs(rp_ratio_table[,6]))
+#temporal average increase in rain fraction PER DEG C with 4.0 deg is:
+mean(abs(rp_ratio_table[,7]))
+```
